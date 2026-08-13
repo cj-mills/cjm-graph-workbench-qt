@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cjm-graph-workbench-qt"
+version = "0.0.1"
+description = "Qt workbench over a cjm context graph — the slab-1 PILOT for the PySide6 application lane (DEC 1e5b9a76): the same lens layer and seat verbs as the Textual shell (portfolio front door -> per-anchor pin trees -> node-in-context), re-painted with real typography — proportional type, native word-wrap, markdown-rendered note bodies via QTextDocument. Read-only spike; its field verdict against the Textual shell decides where the slab-2 surface lands. Born on-graph."
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Apache-2.0"}
+authors = [{name = "Christian J. Mills", email = "9126128+cj-mills@users.noreply.github.com"}]
+classifiers = ["Programming Language :: Python :: 3", "Programming Language :: Python :: 3 :: Only"]
+dependencies = ['cjm-graph-workbench-tui>=0.0.1', 'cjm-context-graph-projection>=0.0.39', 'PySide6']
+
+[project.scripts]
+cjm-graph-workbench-qt = "cjm_graph_workbench_qt.cli:main"
+
+[project.urls]
+Repository = "https://github.com/cj-mills/cjm-graph-workbench-qt"
+
+[tool.setuptools.packages.find]
+include = ["cjm_graph_workbench_qt*"]
