@@ -13,7 +13,40 @@ LOCK = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 
 
 class FakeSession:
-    """Canned lens views: one anchor, one lock note, one node detail."""
+    """Canned lens views + write capture: one anchor, one lock note, one node
+    detail, an empty feed; journaled writes append to `.writes` for asserting."""
+
+    journal_paths: list = []
+
+    def __init__(self):
+        self.writes = []
+
+    def feed(self, session_key=None, since=None, limit=200):
+        return {"window": {"session": session_key, "since": since, "cursor": 1786700000.0,
+                           "total_ops": 1, "shown": 1},
+                "ops": [{"ts": 1786700000.0, "verb": "decide", "actor": "user:workbench",
+                         "session": session_key, "summary": "a canned op",
+                         "refs": [{"ref": LOCK[:8], "id": LOCK, "label": "Decision",
+                                   "title": "the stub"}]}],
+                "cards": [{"ref": LOCK[:8], "id": LOCK, "label": "Decision",
+                           "title": "the stub", "verbs": {"decide": 1}, "touches": 1,
+                           "first_ts": 1786700000.0, "last_ts": 1786700000.0}],
+                "missing": 0}
+
+    def body(self, ref):
+        return "the stub body"
+
+    def register_session(self, key, **kw):
+        self.writes.append(("session", key, kw))
+        return {"written": True, "key": key}
+
+    def decide(self, statement, **kw):
+        self.writes.append(("decide", statement, kw))
+        return {"decision_id": LOCK, "statement": statement}
+
+    def link(self, source_id, target_id, relation, **kw):
+        self.writes.append(("link", source_id, target_id, relation))
+        return {"written": True, "source_id": source_id, "target_id": target_id}
 
     def portfolio(self):
         return {"counts": {"ready": 2, "blocked": 1, "done": 3, "closable": 1},
@@ -216,3 +249,59 @@ def test_tab_link_cycling_follows_the_jump(qtbot):
     qtbot.keyClick(win.browser, Qt.Key_Tab)
     qtbot.keyClick(win.browser, Qt.Key_Return)
     assert win.stage == "node" and win.ref == LOCK and len(win.trail) == 3
+
+
+def test_feed_stage_paints_zooms_and_expands(qtbot, monkeypatch):
+    monkeypatch.delenv("CJM_SESSION", raising=False)
+    from PySide6.QtCore import QUrl
+    win = _window(qtbot)
+    win.open_feed()
+    assert win.stage == "feed" and win.ref is None
+    text = win.browser.toPlainText()
+    assert "feed — live window" in text and "a canned op" in text
+    win.toggle_zoom()  # cards zoom: the canned card with its expand toggle
+    text = win.browser.toPlainText()
+    assert "the stub" in text and "+ expand" in text
+    win._on_link(QUrl(f"expand:{LOCK}"))
+    assert "the stub body" in win.browser.toPlainText()
+    win._on_link(QUrl(f"expand:{LOCK}"))  # toggle off
+    assert "the stub body" not in win.browser.toPlainText()
+    win.back()
+    assert win.stage == "portfolio"
+
+
+def test_new_session_registers_points_and_opens_feed(qtbot, tmp_path, monkeypatch):
+    monkeypatch.delenv("CJM_SESSION", raising=False)
+    import os
+    session = FakeSession()
+    session.journal_paths = [str(tmp_path / "g.writes.jsonl")]
+    win = WorkbenchWindow(session)
+    qtbot.addWidget(win)
+    win.new_session()
+    verb, key, kw = session.writes[0]
+    assert verb == "session" and kw.get("started_at")
+    assert win.stage == "feed" and win.ref == key
+    assert (tmp_path / "current-session").read_text() == key
+    assert os.environ["CJM_SESSION"] == key
+
+
+def test_flag_mints_open_stub_linked_to_target(qtbot, monkeypatch):
+    monkeypatch.delenv("CJM_SESSION", raising=False)
+    from PySide6.QtWidgets import QInputDialog
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("the flag note", True)))
+    session = FakeSession()
+    win = WorkbenchWindow(session, anchor=ANCHOR)
+    qtbot.addWidget(win)
+    win.jump_actionable(1)
+    win.descend()                      # node stage; no link focused -> flag self.ref
+    win.flag_focused()
+    decides = [w for w in session.writes if w[0] == "decide"]
+    links = [w for w in session.writes if w[0] == "link"]
+    assert len(decides) == 1 and len(links) == 1
+    _verb, statement, kw = decides[0]
+    assert "CORRECTION FLAG (user:workbench" in statement
+    assert "the flag note" in statement and str(win.ref) in statement
+    assert kw.get("state") == "open"   # flags land on the readiness frontier
+    _verb, src, tgt, rel = links[0]
+    assert src == LOCK and tgt == str(win.ref) and rel == "REFERENCES"

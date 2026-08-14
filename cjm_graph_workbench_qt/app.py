@@ -5,18 +5,27 @@ visible at a time, keyboard-first (j/k, tab, enter, b, p, r, q). Portfolio and
 lead stay ROW lists — the tui spine's own row dicts painted as list items with
 native word-wrap — while the node stage is a QTextBrowser over
 build_node_markdown: the typography/absorption hypothesis under test.
-Read-only; failures paint into the status bar and the seat stays up (family
+Slab 2 adds the SESSION SEAT + LIVE FEED page (s/S, two zooms of one page via
+z, 2s live re-evaluation) and the capture verbs: t titles the seated session,
+f flags the focused link into a journaled correction stub — render-projection
++ capture-verbs, zero state/logic (DEC 8b9804c2); every write is a journaled
+graph verb. Failures paint into the status bar and the seat stays up (family
 posture: never crash the seat). No current-session singletons — every window
 owns its GraphSession."""
 
+import os
+import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_graph_workbench_tui.spine import build_lead_rows, build_portfolio_rows
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
-from PySide6.QtWidgets import (QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
-                               QTextBrowser)
+from PySide6.QtWidgets import (QInputDialog, QListWidget, QListWidgetItem, QMainWindow,
+                               QStackedWidget, QTextBrowser)
 
+from .data import read_session_pointer, write_session_pointer
+from .feed import build_feed_markdown
 from .mdspine import build_node_markdown
 
 # Spine rows carry Rich-ish style words; the Qt paint maps the palette words to
@@ -24,7 +33,8 @@ from .mdspine import build_node_markdown
 STYLE_COLORS = {"red": "#c74a3c", "yellow": "#b9770e", "cyan": "#2b8a9d",
                 "magenta": "#9b59b6", "dim": "#8a9299"}
 
-HINTS = "j/k move · tab next • · enter open · b back · p portfolio · r reload · q quit"
+HINTS = ("j/k move · tab next • · enter open · s feed · b back · p portfolio · "
+         "r reload · q quit")
 
 
 def apply_row_style(item: QListWidgetItem, style: Optional[str]) -> None:
@@ -69,6 +79,17 @@ class WorkbenchWindow(QMainWindow):
         self.stack.addWidget(self.rowlist)
         self.stack.addWidget(self.browser)
         self.setCentralWidget(self.stack)
+        self.feed_zoom = "ops"                 # "ops" (ledger) | "cards"
+        self.feed_expanded: set = set()        # card ids with bodies shown
+        self._feed_bodies: Dict[str, Optional[str]] = {}
+        self._feed_view: Optional[Dict[str, Any]] = None
+        self.feed_timer = QTimer(self)
+        self.feed_timer.setInterval(2000)      # live mode = re-evaluate + repaint on change
+        self.feed_timer.timeout.connect(self._poll_feed)
+        if not os.environ.get("CJM_SESSION"):
+            pointed = read_session_pointer(self.session.journal_paths)
+            if pointed:  # env-first, pointer-fallback — cg-write's resolution order
+                os.environ["CJM_SESSION"] = pointed
         self._bind_keys()
         self.reload()
 
@@ -82,6 +103,11 @@ class WorkbenchWindow(QMainWindow):
         bind("P", self.portfolio)
         bind("R", self.reload)
         bind("Q", self.close)
+        bind("S", self.open_feed)
+        bind("Shift+S", self.new_session)
+        bind("Z", self.toggle_zoom)
+        bind("T", self.title_session)
+        bind("F", self.flag_focused)
         bind("J", lambda: self.move_cursor(1), self.rowlist, Qt.WidgetShortcut)
         bind("K", lambda: self.move_cursor(-1), self.rowlist, Qt.WidgetShortcut)
         bind("Tab", lambda: self.jump_actionable(1), self.rowlist, Qt.WidgetShortcut)
@@ -104,6 +130,8 @@ class WorkbenchWindow(QMainWindow):
         """Paint the current stage — CACHED when already seen (b/back re-paints
         without a graph read, f4701770; errors never cache); `r` refreshes."""
         self.statusBar().showMessage(f"{self._where()} · loading…")
+        if self.stage != "feed":
+            self.feed_timer.stop()
         error = None
         key = (self.stage, str(self.ref))
         try:
@@ -125,6 +153,12 @@ class WorkbenchWindow(QMainWindow):
                 else:
                     self.rows = build_lead_rows(view)
                     self._paint_rows()
+            elif self.stage == "feed":
+                # LIVE — never cached; the poll timer re-evaluates and repaints
+                # only when the window's cursor advances.
+                self._feed_view = self.session.feed(self.ref)
+                self._paint_feed()
+                self.feed_timer.start()
             else:
                 if key in self._view_cache:
                     detail, body = self._view_cache[key]
@@ -142,7 +176,8 @@ class WorkbenchWindow(QMainWindow):
         except Exception as e:  # never crash the seat — paint and stay up
             error, self.rows = f"load failed: {e}", []
         self.statusBar().showMessage(
-            f"{self._where()} · ⚠ {error}" if error else f"{self._where()} · {HINTS}")
+            f"{self._where()} · ⚠ {error}" if error
+            else f"{self._where()} · {self._hints()}")
 
     def _paint_rows(self) -> None:
         self.rowlist.clear()
@@ -159,7 +194,18 @@ class WorkbenchWindow(QMainWindow):
     def _where(self) -> str:
         return {"portfolio": "portfolio",
                 "lead": f"lead {str(self.ref)[:28]}",
-                "node": f"node {str(self.ref)[:12]}"}[self.stage]
+                "node": f"node {str(self.ref)[:12]}",
+                "feed": f"feed {self.ref or 'live'}"}[self.stage]
+
+    def _hints(self) -> str:
+        """Stage-contextual keybar (the ba8a423b gap-4 stage half)."""
+        if self.stage == "feed":
+            return ("z zoom · tab links · enter open/expand · f flag · t title · "
+                    "shift+s new session · b back · p portfolio · r reload · q quit")
+        if self.stage == "node":
+            return ("j/k scroll · tab links · enter open/jump · f flag · b back · "
+                    "p portfolio · r reload · q quit")
+        return HINTS
 
     # ---- seat verbs ----------------------------------------------------
 
@@ -185,7 +231,7 @@ class WorkbenchWindow(QMainWindow):
         setMarkdown's layout lands on the NEXT event-loop pass, and the
         not-yet-grown scroll range would clamp the value to the top (drive
         round 1: b lost the jump point after a link follow)."""
-        if self.stage == "node":
+        if self.stage in ("node", "feed"):
             QTimer.singleShot(0, lambda: self._restore_browser_seat(seat))
         elif self.rowlist.count():
             self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
@@ -301,7 +347,7 @@ class WorkbenchWindow(QMainWindow):
         return False
 
     def _seat(self):
-        if self.stage == "node":
+        if self.stage in ("node", "feed"):
             # (scroll, cursor anchor, cursor position): tab link-cycling runs
             # off the text cursor (see eventFilter), so the whole selection
             # state is part of the seat — b re-focuses the exact link you left
@@ -323,6 +369,25 @@ class WorkbenchWindow(QMainWindow):
 
     def _on_link(self, url: QUrl) -> None:
         target = url.toString()
+        if target.startswith("expand:"):
+            # Feed-card body toggle: fetch the body once, repaint in place —
+            # the seat (scroll + focused link) survives the re-render.
+            nid = target[len("expand:"):]
+            if nid in self.feed_expanded:
+                self.feed_expanded.discard(nid)
+            else:
+                self.feed_expanded.add(nid)
+                if nid not in self._feed_bodies:
+                    try:
+                        self._feed_bodies[nid] = self.session.body(nid)
+                    except Exception as e:  # keep the seat up; card shows no body
+                        self._feed_bodies[nid] = None
+                        self.statusBar().showMessage(
+                            f"{self._where()} · ⚠ body fetch failed: {e}")
+            seat = self._seat()
+            self._paint_feed()
+            self._restore_seat(seat)
+            return
         if target.startswith("jump:"):
             # Counts-first overview link: hop IN-PAGE to that relation's
             # neighbour group; the trail records the seat so `b` unwinds the
@@ -345,7 +410,7 @@ class WorkbenchWindow(QMainWindow):
         if (stage, ref) == (self.stage, self.ref):
             # In-page pop (undoing an overview jump): the document is unchanged,
             # so the seat goes straight back — no reload, no deferred pass.
-            if stage == "node":
+            if stage in ("node", "feed"):
                 self._restore_browser_seat(seat)
             elif self.rowlist.count():
                 self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
@@ -358,3 +423,142 @@ class WorkbenchWindow(QMainWindow):
         self.trail.clear()
         self.stage, self.ref = "portfolio", None
         self._load()
+
+    # ---- session seat + live feed (slab 2, DEC ee9e9be6) ---------------
+
+    def _paint_feed(self) -> None:
+        """Render the held feed view at the current zoom; expansion bodies ride."""
+        if self._feed_view is None:
+            return
+        self.browser.setMarkdown(build_feed_markdown(
+            self._feed_view, zoom=self.feed_zoom,
+            expanded=self.feed_expanded, bodies=self._feed_bodies))
+        self.stack.setCurrentWidget(self.browser)
+        self.browser.setFocus()
+
+    def _poll_feed(self) -> None:
+        """Live mode: re-evaluate the declarative feed; repaint (seat preserved)
+        only when the window's cursor advanced."""
+        if self.stage != "feed":
+            self.feed_timer.stop()
+            return
+        try:
+            view = self.session.feed(self.ref)
+        except Exception as e:  # transient read failure must not kill the loop
+            self.statusBar().showMessage(f"{self._where()} · ⚠ poll failed: {e}")
+            return
+        old = ((self._feed_view or {}).get("window") or {}).get("cursor")
+        if ((view.get("window") or {}).get("cursor")) == old:
+            return
+        self._feed_view = view
+        seat = self._seat()
+        self._paint_feed()
+        self._restore_seat(seat)
+
+    def open_feed(self) -> None:
+        """`s`: the seat page for the ACTIVE session (env-first, pointer
+        fallback), or the whole-journal live window when none is active."""
+        if self.stage == "feed":
+            return
+        key = (os.environ.get("CJM_SESSION")
+               or read_session_pointer(self.session.journal_paths))
+        self.trail.append((self.stage, self.ref, self._seat()))
+        self.stage, self.ref = "feed", key
+        self._load()
+
+    def new_session(self) -> None:
+        """`S`: mint + register a session spine node, point .cjm/current-session
+        at it, adopt it in-process, open its feed — the start ritual as one key."""
+        key = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        try:
+            res = self.session.register_session(key, started_at=time.time())
+        except Exception as e:
+            self.statusBar().showMessage(f"{self._where()} · ⚠ session write failed: {e}")
+            return
+        if res.get("error"):
+            self.statusBar().showMessage(f"{self._where()} · ⚠ {res['error']}")
+            return
+        write_session_pointer(self.session.journal_paths, key)
+        os.environ["CJM_SESSION"] = key
+        self.trail.append((self.stage, self.ref, self._seat()))
+        self.stage, self.ref = "feed", key
+        self._load()
+        self.statusBar().showMessage(f"{self._where()} · session {key} registered · "
+                                     f"{self._hints()}")
+
+    def toggle_zoom(self) -> None:
+        """`z`: op ledger <-> node cards (two zooms of ONE page)."""
+        if self.stage != "feed":
+            return
+        self.feed_zoom = "cards" if self.feed_zoom == "ops" else "ops"
+        self._paint_feed()
+
+    def title_session(self) -> None:
+        """`t`: name the seated session (the END ritual — an ordinary
+        re-register; a later title never clobbers started_at)."""
+        if self.stage != "feed" or not self.ref:
+            return
+        text, ok = QInputDialog.getText(self, "session title",
+                                        f"title for {self.ref}:")
+        if not ok or not text.strip():
+            return
+        try:
+            res = self.session.register_session(str(self.ref), title=text.strip())
+        except Exception as e:
+            self.statusBar().showMessage(f"{self._where()} · ⚠ title write failed: {e}")
+            return
+        msg = res.get("error") or f"titled: {text.strip()}"
+        self.statusBar().showMessage(f"{self._where()} · {msg}")
+
+    # ---- correction flag (the capture verb) ----------------------------
+
+    def _focused_graph_id(self) -> Optional[str]:
+        """The tab-focused link's graph node id, if the browser is up and a
+        graph:// anchor is selected."""
+        if self.stack.currentWidget() is not self.browser:
+            return None
+        cur = self.browser.textCursor()
+        if not cur.hasSelection():
+            return None
+        probe = self.browser.textCursor()
+        probe.setPosition(cur.selectionStart() + 1)
+        fmt = probe.charFormat()
+        href = fmt.anchorHref() if fmt.isAnchor() else ""
+        return href[len("graph://"):] if href.startswith("graph://") else None
+
+    def flag_focused(self) -> None:
+        """`f`: mint a correction stub for the focused link (or the open node) —
+        a Decision with task_state=open, stub -REFERENCES-> target, all
+        journaled (the acdb1c04 doorbell: content flows on-graph; chat stays
+        the turn-advance signal)."""
+        target = self._focused_graph_id()
+        if target is None and self.stage == "node" and self.ref:
+            target = str(self.ref)
+        if not target:
+            self.statusBar().showMessage(
+                f"{self._where()} · flag: focus a graph link first (tab)")
+            return
+        note, ok = QInputDialog.getText(self, "correction flag",
+                                        f"note for {target[:8]} (optional):")
+        if not ok:
+            return
+        note = note.strip()
+        session_key = (str(self.ref) if self.stage == "feed" and self.ref
+                       else os.environ.get("CJM_SESSION") or None)
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        statement = (f"CORRECTION FLAG (user:workbench, {stamp}): "
+                     f"{note or 'flagged for attention'} — target {target}")
+        try:
+            res = self.session.decide(statement, state="open", session=session_key,
+                                      title=f"flag: {note[:44] if note else target[:8]}")
+            if res.get("error"):
+                self.statusBar().showMessage(f"{self._where()} · ⚠ {res['error']}")
+                return
+            stub = res["decision_id"]
+            lk = self.session.link(stub, target, "REFERENCES")
+        except Exception as e:
+            self.statusBar().showMessage(f"{self._where()} · ⚠ flag write failed: {e}")
+            return
+        tail = f" (link: {lk['error']})" if lk.get("error") else ""
+        self.statusBar().showMessage(
+            f"{self._where()} · flagged {target[:8]} → stub {stub[:8]}{tail}")
