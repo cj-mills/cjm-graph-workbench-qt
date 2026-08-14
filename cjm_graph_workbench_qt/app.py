@@ -179,15 +179,25 @@ class WorkbenchWindow(QMainWindow):
         bar = self.browser.verticalScrollBar()
         bar.setValue(bar.value() + lines * bar.singleStep())
 
-    def _restore_seat(self, seat: int) -> None:
+    def _restore_seat(self, seat) -> None:
         """Put the seat back after a repaint. The browser restore is DEFERRED:
         setMarkdown's layout lands on the NEXT event-loop pass, and the
         not-yet-grown scroll range would clamp the value to the top (drive
         round 1: b lost the jump point after a link follow)."""
         if self.stage == "node":
-            QTimer.singleShot(0, lambda: self.browser.verticalScrollBar().setValue(seat))
+            QTimer.singleShot(0, lambda: self._restore_browser_seat(seat))
         elif self.rowlist.count():
             self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
+
+    def _restore_browser_seat(self, seat) -> None:
+        """Node-stage seat restore: keyboard cursor first (its implicit scroll
+        is then overridden), stored scroll last so the viewport wins."""
+        scroll, pos = seat if isinstance(seat, tuple) else (seat, None)
+        if pos is not None:
+            cursor = self.browser.textCursor()
+            cursor.setPosition(min(pos, self.browser.document().characterCount() - 1))
+            self.browser.setTextCursor(cursor)
+        self.browser.verticalScrollBar().setValue(scroll)
 
     def _scroll_to_group(self, rel: str) -> None:
         """Scroll the node stage so `rel`'s neighbour-group header sits at the
@@ -201,15 +211,25 @@ class WorkbenchWindow(QMainWindow):
             if not seen_head:
                 seen_head = block.text().startswith("neighbours (")
             elif block.text() == rel:
+                # The keyboard cursor travels WITH the jump: tab now cycles the
+                # jumped-to group's links, not the overview's (drive find
+                # 2026-08-14). Cursor first — its implicit ensure-visible
+                # scroll is then corrected to put the header at the top.
+                self.browser.setTextCursor(QTextCursor(block))
                 bar = self.browser.verticalScrollBar()
                 bar.setValue(bar.value()
                              + self.browser.cursorRect(QTextCursor(block)).top())
                 return
             block = block.next()
 
-    def _seat(self) -> int:
+    def _seat(self):
         if self.stage == "node":
-            return self.browser.verticalScrollBar().value()
+            # (scroll, keyboard cursor): tab cycles links FROM the text cursor,
+            # so the nav position is part of the seat, not just the viewport
+            # (user drive find 2026-08-14: tab stayed at the overview after a
+            # counts-first jump).
+            return (self.browser.verticalScrollBar().value(),
+                    self.browser.textCursor().position())
         return max(0, self.rowlist.currentRow())
 
     def descend(self) -> None:
@@ -247,7 +267,7 @@ class WorkbenchWindow(QMainWindow):
             # In-page pop (undoing an overview jump): the document is unchanged,
             # so the seat goes straight back — no reload, no deferred pass.
             if stage == "node":
-                self.browser.verticalScrollBar().setValue(seat)
+                self._restore_browser_seat(seat)
             elif self.rowlist.count():
                 self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
             return

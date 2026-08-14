@@ -163,9 +163,13 @@ def test_overview_jump_scrolls_and_b_unwinds_in_page(qtbot):
     bar = win.browser.verticalScrollBar()
     qtbot.waitUntil(lambda: bar.maximum() > 0)
     assert bar.value() == 0
+    cursor_before = win.browser.textCursor().position()
     win._on_link(QUrl("jump:SHAPES"))
-    # in-page jump: same stage/ref, the trail grew, the view scrolled down
+    # in-page jump: same stage/ref, the trail grew, the view scrolled down,
+    # and the KEYBOARD cursor moved so tab cycles the jumped-to group's links
     assert win.stage == "node" and len(win.trail) == 2 and bar.value() > 0
+    assert win.browser.textCursor().position() > cursor_before
     win.back()
-    # in-page pop: seat restored immediately, no reload, trail shrank
+    # in-page pop: the seat (scroll AND cursor) restored immediately, no reload
     assert win.stage == "node" and len(win.trail) == 1 and bar.value() == 0
+    assert win.browser.textCursor().position() == cursor_before
