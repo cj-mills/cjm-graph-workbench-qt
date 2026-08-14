@@ -173,3 +173,46 @@ def test_overview_jump_scrolls_and_b_unwinds_in_page(qtbot):
     # in-page pop: the seat (scroll AND cursor) restored immediately, no reload
     assert win.stage == "node" and len(win.trail) == 1 and bar.value() == 0
     assert win.browser.textCursor().position() == cursor_before
+
+
+def test_tab_link_cycling_follows_the_jump(qtbot):
+    from PySide6.QtCore import Qt
+
+    class GroupSession(FakeSession):
+        def node(self, ref):
+            detail, _body = super().node(ref)
+            detail["neighbours"] = (
+                [{"relation": "REFERENCES", "direction": "out",
+                  "node": {"id": LOCK, "title": f"ref {i}", "label": "Note"}}
+                 for i in range(3)]
+                + [{"relation": "SHAPES", "direction": "out",
+                    "node": {"id": LOCK, "title": "shaped", "label": "Note"}}])
+            return detail, "short body"
+
+    win = WorkbenchWindow(GroupSession(), anchor=ANCHOR)
+    qtbot.addWidget(win)
+    win.resize(1000, 700)
+    win.show()
+    win.jump_actionable(1)
+    win.descend()
+    # tab (through the real event filter) selects the FIRST overview link
+    qtbot.keyClick(win.browser, Qt.Key_Tab)
+    assert win.browser.textCursor().selectedText() == "REFERENCES (3)"
+    # enter-jump: the cursor lands on the group header, so the NEXT tab selects
+    # that group's first link — not the document's first (drive find 2026-08-14)
+    qtbot.keyClick(win.browser, Qt.Key_Return)
+    assert len(win.trail) == 2
+    qtbot.keyClick(win.browser, Qt.Key_Tab)
+    assert win.browser.textCursor().selectedText() == "ref 0"
+    # shift+tab walks backward across the group header to the previous link
+    win._cycle_link(-1)
+    assert win.browser.textCursor().selectedText() == "SHAPES (1)"
+    win._cycle_link(1)
+    # b unwinds the jump AND re-lights the overview link it started from
+    win.back()
+    assert win.browser.textCursor().selectedText() == "REFERENCES (3)"
+    # the same enter path activates graph:// links: jump, tab in, descend
+    qtbot.keyClick(win.browser, Qt.Key_Return)
+    qtbot.keyClick(win.browser, Qt.Key_Tab)
+    qtbot.keyClick(win.browser, Qt.Key_Return)
+    assert win.stage == "node" and win.ref == LOCK and len(win.trail) == 3

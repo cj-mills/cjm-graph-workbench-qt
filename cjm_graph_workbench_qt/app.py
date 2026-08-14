@@ -12,7 +12,7 @@ owns its GraphSession."""
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_graph_workbench_tui.spine import build_lead_rows, build_portfolio_rows
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
                                QTextBrowser)
@@ -61,7 +61,8 @@ class WorkbenchWindow(QMainWindow):
         self.rowlist.itemDoubleClicked.connect(lambda _item: self.descend())
         self.browser = QTextBrowser()
         self.browser.setOpenLinks(False)
-        self.browser.setTabChangesFocus(False)  # tab cycles LINKS, not widgets
+        self.browser.setTabChangesFocus(False)  # tab stays ours: links, not widgets
+        self.browser.installEventFilter(self)   # tab/enter link nav lives in eventFilter
         self.browser.anchorClicked.connect(self._on_link)
         self.browser.document().setDocumentMargin(16)
         self.stack = QStackedWidget()
@@ -190,13 +191,18 @@ class WorkbenchWindow(QMainWindow):
             self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
 
     def _restore_browser_seat(self, seat) -> None:
-        """Node-stage seat restore: keyboard cursor first (its implicit scroll
-        is then overridden), stored scroll last so the viewport wins."""
-        scroll, pos = seat if isinstance(seat, tuple) else (seat, None)
-        if pos is not None:
+        """Node-stage seat restore: keyboard cursor/selection first (its
+        implicit scroll is then overridden), stored scroll last so the
+        viewport wins. Restoring the SELECTION re-lights the focused link."""
+        if isinstance(seat, tuple):
+            scroll, anchor, pos = seat
+            limit = self.browser.document().characterCount() - 1
             cursor = self.browser.textCursor()
-            cursor.setPosition(min(pos, self.browser.document().characterCount() - 1))
+            cursor.setPosition(min(anchor, limit))
+            cursor.setPosition(min(pos, limit), QTextCursor.KeepAnchor)
             self.browser.setTextCursor(cursor)
+        else:
+            scroll = seat
         self.browser.verticalScrollBar().setValue(scroll)
 
     def _scroll_to_group(self, rel: str) -> None:
@@ -222,14 +228,87 @@ class WorkbenchWindow(QMainWindow):
                 return
             block = block.next()
 
+    def eventFilter(self, obj, event) -> bool:
+        """Browser link nav owned HERE: QTextBrowser's native tab cycling keeps
+        a PRIVATE focus cursor that cannot be seeded, so a counts-first jump
+        could never carry it (drive find 2026-08-14: post-jump tab reset to
+        the document's first link). Tab/shift+tab select the next/previous
+        anchor from the TEXT cursor — which jumps, b, and reload all steer —
+        and enter activates the selected one."""
+        if obj is self.browser and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Tab:
+                self._cycle_link(1)
+                return True
+            if event.key() == Qt.Key_Backtab:
+                self._cycle_link(-1)
+                return True
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter) and self._activate_link():
+                return True
+        return super().eventFilter(obj, event)
+
+    def _anchor_spans(self) -> List[Tuple[int, int, str]]:
+        """(start, end, href) for every link in document order; contiguous
+        fragments of one anchor merge into a single span."""
+        spans: List[Tuple[int, int, str]] = []
+        block = self.browser.document().begin()
+        while block.isValid():
+            it = block.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                fmt = frag.charFormat()
+                href = fmt.anchorHref() if fmt.isAnchor() else ""
+                if href:
+                    start, end = frag.position(), frag.position() + frag.length()
+                    if spans and spans[-1][2] == href and spans[-1][1] == start:
+                        spans[-1] = (spans[-1][0], end, href)
+                    else:
+                        spans.append((start, end, href))
+                it += 1
+            block = block.next()
+        return spans
+
+    def _cycle_link(self, delta: int) -> None:
+        """Select the next/previous link from the text cursor (wrapping); the
+        SELECTION is the visible focus indicator, and the seat follows it."""
+        spans = self._anchor_spans()
+        if not spans:
+            return
+        cur = self.browser.textCursor()
+        lo = min(cur.anchor(), cur.position())
+        hi = max(cur.anchor(), cur.position())
+        if delta > 0:
+            nxt = next((s for s in spans
+                        if s[0] >= hi and (s[0], s[1]) != (lo, hi)), spans[0])
+        else:
+            nxt = next((s for s in reversed(spans)
+                        if s[1] <= lo and (s[0], s[1]) != (lo, hi)), spans[-1])
+        cur.setPosition(nxt[0])
+        cur.setPosition(nxt[1], QTextCursor.KeepAnchor)
+        self.browser.setTextCursor(cur)
+        self.browser.ensureCursorVisible()
+
+    def _activate_link(self) -> bool:
+        """Open the tab-selected link (enter); False when none is selected."""
+        cur = self.browser.textCursor()
+        if not cur.hasSelection():
+            return False
+        probe = self.browser.textCursor()
+        probe.setPosition(cur.selectionStart() + 1)  # format of the char AT start
+        fmt = probe.charFormat()
+        if fmt.isAnchor() and fmt.anchorHref():
+            self._on_link(QUrl(fmt.anchorHref()))
+            return True
+        return False
+
     def _seat(self):
         if self.stage == "node":
-            # (scroll, keyboard cursor): tab cycles links FROM the text cursor,
-            # so the nav position is part of the seat, not just the viewport
-            # (user drive find 2026-08-14: tab stayed at the overview after a
-            # counts-first jump).
+            # (scroll, cursor anchor, cursor position): tab link-cycling runs
+            # off the text cursor (see eventFilter), so the whole selection
+            # state is part of the seat — b re-focuses the exact link you left
+            # (user drive finds 2026-08-14: nav position must travel).
+            cur = self.browser.textCursor()
             return (self.browser.verticalScrollBar().value(),
-                    self.browser.textCursor().position())
+                    cur.anchor(), cur.position())
         return max(0, self.rowlist.currentRow())
 
     def descend(self) -> None:
