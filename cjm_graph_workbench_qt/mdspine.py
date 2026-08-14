@@ -15,8 +15,20 @@ CODE_KINDS = ("CodeSymbol", "CodeModule", "CodeText", "Cell")
 
 
 def link_text(title: Any) -> str:
-    """Escape the markdown-active brackets in link TEXT (titles are data)."""
-    return str(title).replace("[", "\\[").replace("]", "\\]")
+    """Escape the markdown-active characters in link/inline TEXT (titles and
+    summaries are data): brackets, and raw `<` — QTextDocument's markdown
+    parser reads `<word>` as an inline-HTML element and SWALLOWS the rest of
+    the document (drive find 2026-08-14: a statement containing a literal
+    `expand:` link example ate the neighbours section)."""
+    return (str(title).replace("[", "\\[").replace("]", "\\]")
+            .replace("<", "&lt;"))
+
+
+def escape_inline_html(text: str) -> str:
+    """Neutralize raw `<` in PROSE so it cannot open an inline-HTML element
+    (same hazard as link_text; fenced code protects itself, so never apply
+    this inside a fence)."""
+    return text.replace("<", "&lt;")
 
 
 def build_node_markdown(detail: Dict[str, Any], body: Optional[str]) -> str:
@@ -79,13 +91,46 @@ def build_node_markdown(detail: Dict[str, Any], body: Optional[str]) -> str:
 
 
 def _defuse_frontmatter(text: str) -> str:
-    """A note body's leading `---` frontmatter renders as setext-heading noise
-    under markdown; fence it as yaml so the metadata stays readable prose."""
+    """Prose body -> safe markdown: leading `---` frontmatter fenced as yaml
+    (it renders as setext-heading noise otherwise), and raw inline HTML
+    neutralized in the prose remainder (the fence protects its own)."""
     if not text.startswith("---\n"):
-        return text
+        return escape_inline_html(text)
     end = text.find("\n---", 4)
     if end < 0:
-        return text
+        return escape_inline_html(text)
     head = text[4:end].rstrip("\n")
     rest = text[end + 4:].lstrip("\n")
-    return "```yaml\n" + head + "\n```\n\n" + rest
+    return "```yaml\n" + head + "\n```\n\n" + escape_inline_html(rest)
+
+
+def build_search_markdown(term: str, locate_res: Dict[str, Any],
+                          grep_res: Dict[str, Any]) -> str:
+    """Literal search results as one page of graph:// links (the slab-2 half
+    of the 18cd3e8d search seat): `locate` over identifying properties, `grep`
+    over exhaustive content with judgeable snippets. Concept-level existence
+    stays slab 3."""
+    lines: List[str] = [f"# search — {link_text(term)}", ""]
+    loc = locate_res.get("matches") or []
+    hits = grep_res.get("matches") or []
+    lines.append(f"*locate {locate_res.get('count', len(loc))}"
+                 f"{' (truncated)' if locate_res.get('truncated') else ''}"
+                 f" · grep {grep_res.get('count', len(hits))}"
+                 f"{' (truncated)' if grep_res.get('truncated') else ''}*")
+    lines += ["", "## locate — names · slugs · paths", ""]
+    for m in loc:
+        path = f" — `{m['path']}`" if m.get("path") else ""
+        lines.append(f"- [{link_text(m.get('title') or str(m.get('id', ''))[:8])}]"
+                     f"(graph://{m.get('id', '')}) `{m.get('label', '?')}`{path}")
+    if not loc:
+        lines.append("*(no matches)*")
+    lines += ["", "## grep — exact content", ""]
+    for m in hits:
+        lines.append(f"- [{link_text(m.get('title') or str(m.get('id', ''))[:8])}]"
+                     f"(graph://{m.get('id', '')}) `{m.get('label', '?')}`"
+                     f" · {m.get('field', '?')}")
+        if m.get("snippet"):
+            lines.append(f"  …{link_text(m['snippet'])}…")
+    if not hits:
+        lines.append("*(no matches)*")
+    return "\n".join(lines)

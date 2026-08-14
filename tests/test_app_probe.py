@@ -33,8 +33,27 @@ class FakeSession:
                            "first_ts": 1786700000.0, "last_ts": 1786700000.0}],
                 "missing": 0}
 
+    def feed_async(self, session_key=None, since=None, limit=200):
+        import concurrent.futures
+        fut = concurrent.futures.Future()
+        fut.set_result(self.feed(session_key, since, limit))
+        return fut  # already-resolved: the queued delivery runs synchronously
+
     def body(self, ref):
         return "the stub body"
+
+    def sessions(self, limit=500):
+        return [{"id": LOCK, "key": "2026-08-13_00-00-00", "title": "older one",
+                 "started_at": 1786600000.0},
+                {"id": LOCK, "key": "2026-08-14_00-00-00", "title": "",
+                 "started_at": 1786690000.0}]
+
+    def search(self, term, limit=25):
+        return ({"matches": [{"id": ANCHOR, "label": "Note", "title": "a name hit",
+                              "path": "pkg/mod.py"}], "count": 1},
+                {"matches": [{"id": LOCK, "label": "Decision", "title": "a content hit",
+                              "field": "statement", "snippet": f"around {term} here"}],
+                 "count": 1})
 
     def register_session(self, key, **kw):
         self.writes.append(("session", key, kw))
@@ -305,3 +324,29 @@ def test_flag_mints_open_stub_linked_to_target(qtbot, monkeypatch):
     assert kw.get("state") == "open"   # flags land on the readiness frontier
     _verb, src, tgt, rel = links[0]
     assert src == LOCK and tgt == str(win.ref) and rel == "REFERENCES"
+
+
+def test_sessions_picker_and_search_stage(qtbot, monkeypatch):
+    monkeypatch.delenv("CJM_SESSION", raising=False)
+    from PySide6.QtWidgets import QInputDialog
+    win = _window(qtbot)
+    win.open_sessions()
+    assert win.stage == "sessions"
+    texts = [win.rowlist.item(i).text() for i in range(win.rowlist.count())]
+    # newest first, titles ride along
+    assert any("2026-08-14_00-00-00" in t for t in texts)
+    assert texts.index(next(t for t in texts if "2026-08-14" in t)) < \
+        texts.index(next(t for t in texts if "older one" in t))
+    win.jump_actionable(1)
+    win.descend()                       # a session row opens that session's FEED
+    assert win.stage == "feed" and win.ref == "2026-08-14_00-00-00"
+    # literal search: locate + grep on one page, back pops to the feed
+    monkeypatch.setattr(QInputDialog, "getText",
+                        staticmethod(lambda *a, **k: ("needle", True)))
+    win.search_prompt()
+    assert win.stage == "search" and win.ref == "needle"
+    text = win.browser.toPlainText()
+    assert "a name hit" in text and "pkg/mod.py" in text
+    assert "a content hit" in text and "around needle here" in text
+    win.back()
+    assert win.stage == "feed"

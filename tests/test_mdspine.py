@@ -62,3 +62,16 @@ def test_overview_entries_are_jump_links():
     md = build_node_markdown(_detail(), "the body")
     assert "[HAS_SECTION (1)](jump:HAS_SECTION)" in md
     assert "[REFERENCES (1)](jump:REFERENCES)" in md
+
+
+def test_raw_inline_html_in_prose_cannot_swallow_the_document():
+    # A statement/body containing a literal `<id>` must not open an inline-HTML
+    # element (QTextDocument's parser ate the neighbours section — drive find
+    # 2026-08-14): the `<` is neutralized in prose AND in link/summary text.
+    md = build_node_markdown(_detail(), "toggle via expand:<id> links, then more")
+    assert "expand:&lt;id> links" in md
+    assert "**REFERENCES**" in md and "**HAS_SECTION**" in md
+    detail = _detail()
+    detail["neighbours"][0]["node"]["title"] = "uses Dict<str> maps"
+    md = build_node_markdown(detail, None)
+    assert "Dict&lt;str>" in md

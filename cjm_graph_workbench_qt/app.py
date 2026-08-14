@@ -19,14 +19,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_graph_workbench_tui.spine import build_lead_rows, build_portfolio_rows
-from PySide6.QtCore import QEvent, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (QInputDialog, QListWidget, QListWidgetItem, QMainWindow,
                                QStackedWidget, QTextBrowser)
 
 from .data import read_session_pointer, write_session_pointer
-from .feed import build_feed_markdown
-from .mdspine import build_node_markdown
+from .feed import build_feed_markdown, build_session_rows
+from .mdspine import build_node_markdown, build_search_markdown
 
 # Spine rows carry Rich-ish style words; the Qt paint maps the palette words to
 # colors and `bold` to weight (theme-neutral hexes readable on light and dark).
@@ -54,6 +54,8 @@ class WorkbenchWindow(QMainWindow):
 
     The trail keeps (stage, ref, seat) per hop — `b` restores the exact seat
     (list row, or browser scroll position on the node stage)."""
+
+    feed_ready = Signal(object)  # loop-thread Future -> Qt thread (queued)
 
     def __init__(self, session, anchor: Optional[str] = None):
         super().__init__()
@@ -83,6 +85,9 @@ class WorkbenchWindow(QMainWindow):
         self.feed_expanded: set = set()        # card ids with bodies shown
         self._feed_bodies: Dict[str, Optional[str]] = {}
         self._feed_view: Optional[Dict[str, Any]] = None
+        self._feed_view_ref: Optional[str] = None  # which session the held view is for
+        self._feed_inflight = False
+        self.feed_ready.connect(self._on_feed_ready)
         self.feed_timer = QTimer(self)
         self.feed_timer.setInterval(2000)      # live mode = re-evaluate + repaint on change
         self.feed_timer.timeout.connect(self._poll_feed)
@@ -108,6 +113,8 @@ class WorkbenchWindow(QMainWindow):
         bind("Z", self.toggle_zoom)
         bind("T", self.title_session)
         bind("F", self.flag_focused)
+        bind("O", self.open_sessions)
+        bind("/", self.search_prompt)
         bind("J", lambda: self.move_cursor(1), self.rowlist, Qt.WidgetShortcut)
         bind("K", lambda: self.move_cursor(-1), self.rowlist, Qt.WidgetShortcut)
         bind("Tab", lambda: self.jump_actionable(1), self.rowlist, Qt.WidgetShortcut)
@@ -154,11 +161,32 @@ class WorkbenchWindow(QMainWindow):
                     self.rows = build_lead_rows(view)
                     self._paint_rows()
             elif self.stage == "feed":
-                # LIVE — never cached; the poll timer re-evaluates and repaints
-                # only when the window's cursor advances.
-                self._feed_view = self.session.feed(self.ref)
-                self._paint_feed()
+                # LIVE, ASYNC — the journal parse runs on the loop thread and
+                # lands via feed_ready (the paint thread never blocks on it);
+                # a held view (b-back) paints instantly, the poll freshens it.
+                if (self._feed_view is not None
+                        and self._feed_view_ref == (self.ref or None)):
+                    self._paint_feed()
+                else:
+                    self._feed_view = None
+                    self.browser.setMarkdown("*loading feed…*")
+                    self.stack.setCurrentWidget(self.browser)
+                    self.browser.setFocus()
+                self._request_feed()
                 self.feed_timer.start()
+            elif self.stage == "sessions":
+                if key not in self._view_cache:
+                    self._view_cache[key] = self.session.sessions()
+                self.rows = build_session_rows(self._view_cache[key])
+                self._paint_rows()
+            elif self.stage == "search":
+                if key not in self._view_cache:
+                    self._view_cache[key] = self.session.search(str(self.ref))
+                loc, hits = self._view_cache[key]
+                self.browser.setMarkdown(
+                    build_search_markdown(str(self.ref), loc, hits))
+                self.stack.setCurrentWidget(self.browser)
+                self.browser.setFocus()
             else:
                 if key in self._view_cache:
                     detail, body = self._view_cache[key]
@@ -195,16 +223,24 @@ class WorkbenchWindow(QMainWindow):
         return {"portfolio": "portfolio",
                 "lead": f"lead {str(self.ref)[:28]}",
                 "node": f"node {str(self.ref)[:12]}",
-                "feed": f"feed {self.ref or 'live'}"}[self.stage]
+                "feed": f"feed {self.ref or 'live'}",
+                "sessions": "sessions",
+                "search": f"search {str(self.ref)[:24]}"}[self.stage]
 
     def _hints(self) -> str:
         """Stage-contextual keybar (the ba8a423b gap-4 stage half)."""
         if self.stage == "feed":
             return ("z zoom · tab links · enter open/expand · f flag · t title · "
-                    "shift+s new session · b back · p portfolio · r reload · q quit")
+                    "o sessions · shift+s new session · b back · r reload · q quit")
         if self.stage == "node":
-            return ("j/k scroll · tab links · enter open/jump · f flag · b back · "
-                    "p portfolio · r reload · q quit")
+            return ("j/k scroll · tab links · enter open/jump · f flag · / search · "
+                    "b back · p portfolio · r reload · q quit")
+        if self.stage == "search":
+            return ("j/k scroll · tab links · enter open · f flag · / new search · "
+                    "b back · p portfolio · q quit")
+        if self.stage == "sessions":
+            return ("j/k move · enter open feed · b back · p portfolio · "
+                    "r reload · q quit")
         return HINTS
 
     # ---- seat verbs ----------------------------------------------------
@@ -231,7 +267,7 @@ class WorkbenchWindow(QMainWindow):
         setMarkdown's layout lands on the NEXT event-loop pass, and the
         not-yet-grown scroll range would clamp the value to the top (drive
         round 1: b lost the jump point after a link follow)."""
-        if self.stage in ("node", "feed"):
+        if self.stage in ("node", "feed", "search"):
             QTimer.singleShot(0, lambda: self._restore_browser_seat(seat))
         elif self.rowlist.count():
             self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
@@ -347,7 +383,7 @@ class WorkbenchWindow(QMainWindow):
         return False
 
     def _seat(self):
-        if self.stage in ("node", "feed"):
+        if self.stage in ("node", "feed", "search"):
             # (scroll, cursor anchor, cursor position): tab link-cycling runs
             # off the text cursor (see eventFilter), so the whole selection
             # state is part of the seat — b re-focuses the exact link you left
@@ -410,7 +446,7 @@ class WorkbenchWindow(QMainWindow):
         if (stage, ref) == (self.stage, self.ref):
             # In-page pop (undoing an overview jump): the document is unchanged,
             # so the seat goes straight back — no reload, no deferred pass.
-            if stage in ("node", "feed"):
+            if stage in ("node", "feed", "search"):
                 self._restore_browser_seat(seat)
             elif self.rowlist.count():
                 self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
@@ -437,23 +473,47 @@ class WorkbenchWindow(QMainWindow):
         self.browser.setFocus()
 
     def _poll_feed(self) -> None:
-        """Live mode: re-evaluate the declarative feed; repaint (seat preserved)
-        only when the window's cursor advanced."""
+        """Live mode tick: request a fresh evaluation (async, in-flight-guarded)."""
         if self.stage != "feed":
             self.feed_timer.stop()
             return
-        try:
-            view = self.session.feed(self.ref)
-        except Exception as e:  # transient read failure must not kill the loop
-            self.statusBar().showMessage(f"{self._where()} · ⚠ poll failed: {e}")
+        self._request_feed()
+
+    def _request_feed(self) -> None:
+        """Submit one async feed evaluation; the Future lands on the Qt thread
+        through the queued feed_ready signal."""
+        if self._feed_inflight:
             return
+        self._feed_inflight = True
+        self.session.feed_async(self.ref).add_done_callback(self.feed_ready.emit)
+
+    def _on_feed_ready(self, fut) -> None:
+        """Fresh feed view arrived: repaint only when the cursor advanced (or
+        this is the first paint for the target session), seat preserved."""
+        self._feed_inflight = False
+        if self.stage != "feed":
+            return
+        try:
+            view = fut.result()
+        except Exception as e:  # transient read failure must not kill the loop
+            self.statusBar().showMessage(f"{self._where()} · ⚠ feed read failed: {e}")
+            return
+        if ((view.get("window") or {}).get("session") or None) != (self.ref or None):
+            return  # stale result for a session we already navigated away from
+        first = (self._feed_view is None
+                 or self._feed_view_ref != (self.ref or None))
         old = ((self._feed_view or {}).get("window") or {}).get("cursor")
-        if ((view.get("window") or {}).get("cursor")) == old:
+        if not first and ((view.get("window") or {}).get("cursor")) == old:
             return
         self._feed_view = view
-        seat = self._seat()
-        self._paint_feed()
-        self._restore_seat(seat)
+        self._feed_view_ref = self.ref or None
+        if first:
+            self._paint_feed()
+            self.statusBar().showMessage(f"{self._where()} · {self._hints()}")
+        else:
+            seat = self._seat()
+            self._paint_feed()
+            self._restore_seat(seat)
 
     def open_feed(self) -> None:
         """`s`: the seat page for the ACTIVE session (env-first, pointer
@@ -492,6 +552,25 @@ class WorkbenchWindow(QMainWindow):
             return
         self.feed_zoom = "cards" if self.feed_zoom == "ops" else "ops"
         self._paint_feed()
+
+    def open_sessions(self) -> None:
+        """`o`: the sessions picker — every registered spine session, newest
+        first; enter opens that session's feed (past sessions included)."""
+        if self.stage == "sessions":
+            return
+        self.trail.append((self.stage, self.ref, self._seat()))
+        self.stage, self.ref = "sessions", None
+        self._load()
+
+    def search_prompt(self) -> None:
+        """`/`: literal search (the slab-2 half of the 18cd3e8d seat) — locate
+        over names/slugs/paths + grep over exhaustive content, one results page."""
+        term, ok = QInputDialog.getText(self, "search", "literal term:")
+        if not ok or not term.strip():
+            return
+        self.trail.append((self.stage, self.ref, self._seat()))
+        self.stage, self.ref = "search", term.strip()
+        self._load()
 
     def title_session(self) -> None:
         """`t`: name the seated session (the END ritual — an ordinary

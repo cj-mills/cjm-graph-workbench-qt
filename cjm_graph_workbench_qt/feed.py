@@ -92,3 +92,25 @@ def build_feed_markdown(view: Dict[str, Any], *, zoom: str = "ops",
         if not cards:
             lines += ["", "*(no nodes touched in this window yet)*"]
     return "\n".join(lines)
+
+
+def build_session_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The sessions picker as rows (newest first): key · started · title —
+    each row descends to that session's FEED (a past session's feed is simply
+    one whose cursor never advances; no live/dead mode split)."""
+    rows: List[Dict[str, Any]] = [
+        {"text": f"sessions ({len(sessions)}) — enter opens a session's feed",
+         "style": "dim"},
+        {"text": ""}]
+    ordered = sorted(sessions, key=lambda s: (s.get("started_at") or 0.0, s["key"]),
+                     reverse=True)
+    for s in ordered:
+        bits = [s["key"]]
+        if s.get("started_at"):
+            bits.append(fmt_ts(s["started_at"]))
+        title = f"  — {s['title']}" if s.get("title") else ""
+        rows.append({"text": " · ".join(bits) + title,
+                     "ref": s["key"], "goto": "feed"})
+    if not sessions:
+        rows.append({"text": "(no sessions registered)", "style": "dim"})
+    return rows

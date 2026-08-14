@@ -14,7 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from cjm_context_graph_primitives.journal import append_write
 from cjm_context_graph_projection import write as write_verbs
 from cjm_context_graph_projection.authoring import read_node
-from cjm_context_graph_projection.projection import show
+from cjm_context_graph_projection.factlayer import load_label
+from cjm_context_graph_projection.projection import grep, locate, show
 from cjm_context_graph_projection.runtime import DEFAULT_MANIFESTS, open_graph
 from cjm_context_graph_projection.workbench import anchor_lead_view, portfolio_view, session_feed
 
@@ -130,6 +131,39 @@ class GraphSession:
                                    "source_label": res.get("source_label"),
                                    "target_label": res.get("target_label")})
         return res
+
+    def feed_async(self, session_key: Optional[str] = None,
+                   since: Optional[float] = None, limit: int = 200):
+        """Non-blocking feed read: a concurrent Future resolving on the loop
+        thread — the Qt shell must never block its paint thread on a journal
+        parse (drive find 2026-08-14: the sync 2s poll hitched scrolling)."""
+        return asyncio.run_coroutine_threadsafe(
+            session_feed(self.gx, self.journal_paths, session=session_key,
+                         since=since, limit=limit), self._loop)
+
+    def sessions(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """Registered Session spine nodes (one server-side label pull), newest
+        first: {id, key, title, started_at}."""
+        nodes = self._call(load_label(self.gx, "Session", limit=limit))
+        out: List[Dict[str, Any]] = []
+        for n in nodes:
+            props = (n.get("properties") if isinstance(n, dict)
+                     else getattr(n, "properties", None)) or {}
+            nid = n.get("id") if isinstance(n, dict) else getattr(n, "id", None)
+            key = props.get("key") or props.get("name")
+            if not key:
+                continue
+            out.append({"id": nid, "key": str(key),
+                        "title": str(props.get("display_title") or ""),
+                        "started_at": props.get("started_at")})
+        out.sort(key=lambda s: (s.get("started_at") or 0.0, s["key"]), reverse=True)
+        return out
+
+    def search(self, term: str, limit: int = 25) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """The literal pair (slab-2 half of the search seat): locate over
+        identifying properties + grep over exhaustive content."""
+        return (self._call(locate(self.gx, term, limit=limit)),
+                self._call(grep(self.gx, term, limit=limit)))
 
     def close(self) -> None:
         if self._loop is None:
