@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_graph_workbench_tui.spine import build_lead_rows, build_portfolio_rows
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (QListWidget, QListWidgetItem, QMainWindow, QStackedWidget,
                                QTextBrowser)
 
@@ -77,6 +77,7 @@ class WorkbenchWindow(QMainWindow):
             shortcut.setContext(context)
             shortcut.activated.connect(fn)
         bind("B", self.back)
+        bind("Escape", self.back)
         bind("P", self.portfolio)
         bind("R", self.reload)
         bind("Q", self.close)
@@ -91,9 +92,12 @@ class WorkbenchWindow(QMainWindow):
     # ---- stage loading -------------------------------------------------
 
     def reload(self) -> None:
-        """Explicit refresh (`r`): drop every cached stage view, then re-pull."""
+        """Explicit refresh (`r`): drop every cached stage view, then re-pull —
+        the seat survives the refresh (Textual parity: `r` never loses the row)."""
+        seat = self._seat()
         self._view_cache.clear()
         self._load()
+        self._restore_seat(seat)
 
     def _load(self) -> None:
         """Paint the current stage — CACHED when already seen (b/back re-paints
@@ -175,6 +179,34 @@ class WorkbenchWindow(QMainWindow):
         bar = self.browser.verticalScrollBar()
         bar.setValue(bar.value() + lines * bar.singleStep())
 
+    def _restore_seat(self, seat: int) -> None:
+        """Put the seat back after a repaint. The browser restore is DEFERRED:
+        setMarkdown's layout lands on the NEXT event-loop pass, and the
+        not-yet-grown scroll range would clamp the value to the top (drive
+        round 1: b lost the jump point after a link follow)."""
+        if self.stage == "node":
+            QTimer.singleShot(0, lambda: self.browser.verticalScrollBar().setValue(seat))
+        elif self.rowlist.count():
+            self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
+
+    def _scroll_to_group(self, rel: str) -> None:
+        """Scroll the node stage so `rel`'s neighbour-group header sits at the
+        viewport top. Matched block-exact below the neighbours heading — group
+        headers are whole paragraphs, so titles that merely CONTAIN a relation
+        word (and the overview line itself) can never false-match."""
+        doc = self.browser.document()
+        block = doc.begin()
+        seen_head = False
+        while block.isValid():
+            if not seen_head:
+                seen_head = block.text().startswith("neighbours (")
+            elif block.text() == rel:
+                bar = self.browser.verticalScrollBar()
+                bar.setValue(bar.value()
+                             + self.browser.cursorRect(QTextCursor(block)).top())
+                return
+            block = block.next()
+
     def _seat(self) -> int:
         if self.stage == "node":
             return self.browser.verticalScrollBar().value()
@@ -192,6 +224,15 @@ class WorkbenchWindow(QMainWindow):
 
     def _on_link(self, url: QUrl) -> None:
         target = url.toString()
+        if target.startswith("jump:"):
+            # Counts-first overview link: hop IN-PAGE to that relation's
+            # neighbour group; the trail records the seat so `b` unwinds the
+            # jump (drive-round-2 parity with the Textual overview rows).
+            # `jump:` carries the relation as its PATH — an authority (`//`)
+            # form would arrive host-lowercased through QUrl.
+            self.trail.append((self.stage, self.ref, self._seat()))
+            self._scroll_to_group(target[len("jump:"):])
+            return
         if not target.startswith("graph://"):
             return
         self.trail.append((self.stage, self.ref, self._seat()))
@@ -202,15 +243,17 @@ class WorkbenchWindow(QMainWindow):
         if not self.trail:
             return
         stage, ref, seat = self.trail.pop()
+        if (stage, ref) == (self.stage, self.ref):
+            # In-page pop (undoing an overview jump): the document is unchanged,
+            # so the seat goes straight back — no reload, no deferred pass.
+            if stage == "node":
+                self.browser.verticalScrollBar().setValue(seat)
+            elif self.rowlist.count():
+                self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
+            return
         self.stage, self.ref = stage, ref
         self._load()
-        if stage == "node":
-            # setMarkdown's layout lands on the NEXT event-loop pass — restore
-            # the seat after it, or the not-yet-grown range clamps it to the top
-            # (drive round 1: b lost the jump point after a link follow).
-            QTimer.singleShot(0, lambda: self.browser.verticalScrollBar().setValue(seat))
-        elif self.rowlist.count():
-            self.rowlist.setCurrentRow(min(seat, self.rowlist.count() - 1))
+        self._restore_seat(seat)
 
     def portfolio(self) -> None:
         self.trail.clear()

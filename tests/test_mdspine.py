@@ -56,3 +56,9 @@ def test_frontmatter_fenced_not_headed():
     md = build_node_markdown(_detail(), "---\nname: x\ntype: t\n---\n\nthe prose")
     assert "```yaml\nname: x\ntype: t\n```" in md
     assert "the prose" in md
+
+
+def test_overview_entries_are_jump_links():
+    md = build_node_markdown(_detail(), "the body")
+    assert "[HAS_SECTION (1)](jump:HAS_SECTION)" in md
+    assert "[REFERENCES (1)](jump:REFERENCES)" in md

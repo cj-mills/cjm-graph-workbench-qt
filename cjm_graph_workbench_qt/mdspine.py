@@ -21,7 +21,8 @@ def link_text(title: Any) -> str:
 
 def build_node_markdown(detail: Dict[str, Any], body: Optional[str]) -> str:
     """One node's whole context as a markdown document (DEC 47501c78 order:
-    head matter, ACTIVE facts, journal trace, counts-first neighbour overview,
+    head matter, ACTIVE facts, journal trace, counts-first neighbour overview
+    (each relation a jump: link descending in-page to its group),
     verbatim body — code kinds fenced, notes rendered — then the typed
     neighbour groups as `graph://<id>` links)."""
     n = detail.get("node") or {}
@@ -46,13 +47,16 @@ def build_node_markdown(detail: Dict[str, Any], body: Optional[str]) -> str:
     nb = sorted(detail.get("neighbours") or [],
                 key=lambda e: ((e.get("relation") or "") in ("HAS_SECTION", "CONTAINS"),
                                e.get("relation") or "", e.get("direction") or ""))
-    if nb:  # counts-first overview: the TOC relations lead (drive round 2)
+    if nb:  # counts-first overview, each entry a jump: link (round-2 parity)
         counts: Dict[str, int] = {}
         for e in nb:
             rel = str(e.get("relation", "?"))
             counts[rel] = counts.get(rel, 0) + 1
         overview = sorted(counts, key=lambda r: (r not in ("HAS_SECTION", "CONTAINS"), r))
-        lines += ["", " · ".join(f"{rel} ({counts[rel]})" for rel in overview)]
+        # `jump:` scheme WITHOUT `//`: an authority component would get
+        # host-normalized (lowercased) by QUrl, breaking the block match.
+        lines += ["", " · ".join(f"[{rel} ({counts[rel]})](jump:{rel})"
+                                 for rel in overview)]
     text = body if body else str(props.get("statement") or props.get("value") or "")
     if text:
         lines += ["", "---", ""]

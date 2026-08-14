@@ -129,3 +129,43 @@ def test_back_serves_cache_and_r_refreshes(qtbot):
     assert session.lead_calls == 1
     win.reload()                       # `r`: explicit fresh pull
     assert session.lead_calls == 2
+
+
+def test_reload_keeps_the_seat(qtbot):
+    win = _window(qtbot, anchor=ANCHOR)
+    win.jump_actionable(1)
+    seat = win.rowlist.currentRow()
+    assert seat > 0
+    win.reload()
+    assert win.rowlist.currentRow() == seat
+
+
+def test_overview_jump_scrolls_and_b_unwinds_in_page(qtbot):
+    from PySide6.QtCore import QUrl
+
+    class GroupSession(FakeSession):
+        def node(self, ref):
+            detail, _body = super().node(ref)
+            detail["neighbours"] = (
+                [{"relation": "REFERENCES", "direction": "out",
+                  "node": {"id": LOCK, "title": f"ref {i}", "label": "Note"}}
+                 for i in range(40)]
+                + [{"relation": "SHAPES", "direction": "out",
+                    "node": {"id": LOCK, "title": "shaped", "label": "Note"}}])
+            return detail, "\n\n".join(f"para {i}" for i in range(50))
+
+    win = WorkbenchWindow(GroupSession(), anchor=ANCHOR)
+    qtbot.addWidget(win)
+    win.resize(900, 400)
+    win.show()
+    win.jump_actionable(1)
+    win.descend()
+    bar = win.browser.verticalScrollBar()
+    qtbot.waitUntil(lambda: bar.maximum() > 0)
+    assert bar.value() == 0
+    win._on_link(QUrl("jump:SHAPES"))
+    # in-page jump: same stage/ref, the trail grew, the view scrolled down
+    assert win.stage == "node" and len(win.trail) == 2 and bar.value() > 0
+    win.back()
+    # in-page pop: seat restored immediately, no reload, trail shrank
+    assert win.stage == "node" and len(win.trail) == 1 and bar.value() == 0
