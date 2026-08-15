@@ -19,8 +19,10 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_graph_workbench_tui.spine import build_lead_rows, build_portfolio_rows
+from cjm_substrate_qt_kit.keys import bind
+from cjm_substrate_qt_kit.style import apply_row_style as _kit_apply_row_style
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QKeySequence, QShortcut, QTextCursor
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QInputDialog, QListWidget, QListWidgetItem, QMainWindow,
                                QStackedWidget, QTextBrowser)
 
@@ -28,25 +30,19 @@ from .data import read_session_pointer, write_session_pointer
 from .feed import build_feed_markdown, build_session_rows
 from .mdspine import build_node_markdown, build_search_markdown
 
-# Spine rows carry Rich-ish style words; the Qt paint maps the palette words to
-# colors and `bold` to weight (theme-neutral hexes readable on light and dark).
-STYLE_COLORS = {"red": "#c74a3c", "yellow": "#b9770e", "cyan": "#2b8a9d",
-                "magenta": "#9b59b6", "dim": "#8a9299"}
+# Style words paint via the kit's shared palette (STYLE_COLORS /
+# apply_row_style imported above — kit-owned since the transcription
+# migration's duplication, DEC dcf8a712).
 
 HINTS = ("j/k move · tab next • · enter open · s feed · b back · p portfolio · "
          "r reload · q quit")
 
 
 def apply_row_style(item: QListWidgetItem, style: Optional[str]) -> None:
-    """Map a spine row's style string onto a list item (color words + bold)."""
-    parts = str(style or "").split()
-    for word in parts:
-        if word in STYLE_COLORS:
-            item.setForeground(QColor(STYLE_COLORS[word]))
-    if "bold" in parts:
-        font = item.font()
-        font.setBold(True)
-        item.setFont(font)
+    """Map a spine row's style string onto a list item — delegates to the kit
+    (cjm_substrate_qt_kit.style), kit-owned since the transcription migration's
+    duplication (DEC dcf8a712)."""
+    _kit_apply_row_style(item, style)
 
 
 class WorkbenchWindow(QMainWindow):
@@ -99,29 +95,22 @@ class WorkbenchWindow(QMainWindow):
         self.reload()
 
     def _bind_keys(self) -> None:
-        def bind(key: str, fn, parent=None, context=Qt.WindowShortcut):
-            shortcut = QShortcut(QKeySequence(key), parent or self)
-            shortcut.setContext(context)
-            shortcut.activated.connect(fn)
-        bind("B", self.back)
-        bind("Escape", self.back)
-        bind("P", self.portfolio)
-        bind("R", self.reload)
-        bind("Q", self.close)
-        bind("S", self.open_feed)
-        bind("Shift+S", self.new_session)
-        bind("Z", self.toggle_zoom)
-        bind("T", self.title_session)
-        bind("F", self.flag_focused)
-        bind("O", self.open_sessions)
-        bind("/", self.search_prompt)
-        bind("J", lambda: self.move_cursor(1), self.rowlist, Qt.WidgetShortcut)
-        bind("K", lambda: self.move_cursor(-1), self.rowlist, Qt.WidgetShortcut)
-        bind("Tab", lambda: self.jump_actionable(1), self.rowlist, Qt.WidgetShortcut)
-        bind("Shift+Tab", lambda: self.jump_actionable(-1), self.rowlist, Qt.WidgetShortcut)
-        bind("Return", self.descend, self.rowlist, Qt.WidgetShortcut)
-        bind("J", lambda: self.scroll_browser(3), self.browser, Qt.WidgetShortcut)
-        bind("K", lambda: self.scroll_browser(-3), self.browser, Qt.WidgetShortcut)
+        # Kit bind (cjm_substrate_qt_kit.keys) since the transcription
+        # migration's duplication — same helper, owner-first signature.
+        for key, fn in (("B", self.back), ("Escape", self.back),
+                        ("P", self.portfolio), ("R", self.reload),
+                        ("Q", self.close), ("S", self.open_feed),
+                        ("Shift+S", self.new_session), ("Z", self.toggle_zoom),
+                        ("T", self.title_session), ("F", self.flag_focused),
+                        ("O", self.open_sessions), ("/", self.search_prompt)):
+            bind(self, key, fn)
+        bind(self, "J", lambda: self.move_cursor(1), self.rowlist, Qt.WidgetShortcut)
+        bind(self, "K", lambda: self.move_cursor(-1), self.rowlist, Qt.WidgetShortcut)
+        bind(self, "Tab", lambda: self.jump_actionable(1), self.rowlist, Qt.WidgetShortcut)
+        bind(self, "Shift+Tab", lambda: self.jump_actionable(-1), self.rowlist, Qt.WidgetShortcut)
+        bind(self, "Return", self.descend, self.rowlist, Qt.WidgetShortcut)
+        bind(self, "J", lambda: self.scroll_browser(3), self.browser, Qt.WidgetShortcut)
+        bind(self, "K", lambda: self.scroll_browser(-3), self.browser, Qt.WidgetShortcut)
 
     # ---- stage loading -------------------------------------------------
 
