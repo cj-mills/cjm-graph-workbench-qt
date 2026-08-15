@@ -530,16 +530,26 @@ class WorkbenchWindow(QMainWindow):
         """`S`: mint + register a session spine node, point .cjm/current-session
         at it, adopt it in-process, open its feed — the start ritual as one key."""
         key = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        # Adopt the key BEFORE the journaled write: a registration op stamps
+        # with its OWN session (the manual boot ritual's convention — pointer
+        # first, register second), never the outgoing one (S-test find
+        # 2026-08-14: the op landed tagged to the PREVIOUS session, so it
+        # appeared in both feeds).
+        prev = os.environ.get("CJM_SESSION")
+        os.environ["CJM_SESSION"] = key
         try:
             res = self.session.register_session(key, started_at=time.time())
         except Exception as e:
-            self.statusBar().showMessage(f"{self._where()} · ⚠ session write failed: {e}")
-            return
+            res = {"error": str(e)}
         if res.get("error"):
-            self.statusBar().showMessage(f"{self._where()} · ⚠ {res['error']}")
+            if prev is None:
+                os.environ.pop("CJM_SESSION", None)
+            else:
+                os.environ["CJM_SESSION"] = prev
+            self.statusBar().showMessage(f"{self._where()} · ⚠ session write failed: "
+                                         f"{res['error']}")
             return
         write_session_pointer(self.session.journal_paths, key)
-        os.environ["CJM_SESSION"] = key
         self.trail.append((self.stage, self.ref, self._seat()))
         self.stage, self.ref = "feed", key
         self._load()

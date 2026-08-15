@@ -56,6 +56,8 @@ class FakeSession:
                  "count": 1})
 
     def register_session(self, key, **kw):
+        import os
+        kw["env_at_write"] = os.environ.get("CJM_SESSION")  # stamp-order probe
         self.writes.append(("session", key, kw))
         return {"written": True, "key": key}
 
@@ -299,6 +301,9 @@ def test_new_session_registers_points_and_opens_feed(qtbot, tmp_path, monkeypatc
     win.new_session()
     verb, key, kw = session.writes[0]
     assert verb == "session" and kw.get("started_at")
+    # the registration op stamps with its OWN session, never the outgoing one
+    # (S-test find 2026-08-14): the env is adopted BEFORE the journaled write
+    assert kw.get("env_at_write") == key
     assert win.stage == "feed" and win.ref == key
     assert (tmp_path / "current-session").read_text() == key
     assert os.environ["CJM_SESSION"] == key
