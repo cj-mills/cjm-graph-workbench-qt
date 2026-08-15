@@ -56,3 +56,10 @@ def test_live_window_header_and_empty_states():
     assert "(no ops in this window yet)" in md
     assert "(no nodes touched in this window yet)" in build_feed_markdown(
         empty, zoom="cards")
+
+
+def test_ledger_timestamps_carry_seconds():
+    import re
+    md = build_feed_markdown(_view(), zoom="ops")
+    assert re.search(r"\*\*\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\*\* `decide`", md)
+    assert re.search(r"last \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", md)

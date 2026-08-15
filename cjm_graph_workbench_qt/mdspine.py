@@ -7,6 +7,7 @@ become `graph://<id>` links, so 'enter descends' survives the medium change
 as link activation. Pure functions -> pytest covers this module; painting
 verifies by grab() probe (family craft)."""
 
+import re
 from typing import Any, Dict, List, Optional
 
 from cjm_graph_workbench_tui.spine import fmt_ts
@@ -16,19 +17,30 @@ CODE_KINDS = ("CodeSymbol", "CodeModule", "CodeText", "Cell")
 
 def link_text(title: Any) -> str:
     """Escape the markdown-active characters in link/inline TEXT (titles and
-    summaries are data): brackets, and raw `<` — QTextDocument's markdown
-    parser reads `<word>` as an inline-HTML element and SWALLOWS the rest of
-    the document (drive find 2026-08-14: a statement containing a literal
-    `expand:` link example ate the neighbours section)."""
-    return (str(title).replace("[", "\\[").replace("]", "\\]")
-            .replace("<", "&lt;"))
+    summaries are data): brackets, plus the prose hazards escape_inline_html
+    handles — a `<word>` swallowed the document, a `~`-pair struck it through."""
+    return escape_inline_html(str(title).replace("[", "\\[").replace("]", "\\]"))
+
+
+# Segments that protect their own content: fenced blocks first, then inline
+# code spans — escaping INSIDE them would render the escapes literally.
+_CODE_SPANS = re.compile(r"(```[\s\S]*?```|`[^`]*`)")
+
+
+def _defang(seg: str) -> str:
+    # `<` opens an inline-HTML element that EATS the rest of the document
+    # (drive find #1); a `~` pair renders as strikethrough, and "~" as
+    # approximately-shorthand is all over the corpus while intentional
+    # strikethrough is absent (drive find #2, flag f55719b7 on cef165bf).
+    return seg.replace("<", "&lt;").replace("~", "\\~")
 
 
 def escape_inline_html(text: str) -> str:
-    """Neutralize raw `<` in PROSE so it cannot open an inline-HTML element
-    (same hazard as link_text; fenced code protects itself, so never apply
-    this inside a fence)."""
-    return text.replace("<", "&lt;")
+    """Neutralize markdown hazards in PROSE — raw `<` and bare `~` — while
+    passing code spans and fences through untouched (they protect their own
+    content; escaping there would show the escapes verbatim)."""
+    parts = _CODE_SPANS.split(text)
+    return "".join(p if p.startswith("`") else _defang(p) for p in parts)
 
 
 def build_node_markdown(detail: Dict[str, Any], body: Optional[str]) -> str:

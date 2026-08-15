@@ -75,3 +75,12 @@ def test_raw_inline_html_in_prose_cannot_swallow_the_document():
     detail["neighbours"][0]["node"]["title"] = "uses Dict<str> maps"
     md = build_node_markdown(detail, None)
     assert "Dict&lt;str>" in md
+
+
+def test_tilde_prose_defanged_but_code_spans_untouched():
+    # "~" as approximately-shorthand must not pair into strikethrough
+    # (flag f55719b7 on cef165bf), while code spans keep their content raw.
+    md = build_node_markdown(_detail(), "costs ~5ms and scales ~linearly to ~200ms")
+    assert "\\~5ms" in md and "\\~linearly" in md and "\\~200ms" in md
+    md = build_node_markdown(_detail(), "run `cg-read show ~x` on `Dict<str>` maps")
+    assert "`cg-read show ~x`" in md and "`Dict<str>`" in md

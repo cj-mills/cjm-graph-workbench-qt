@@ -7,6 +7,7 @@ view dicts; refs render as `graph://<id>` links and card expansion as
 `expand:<id>` toggle links, so the shell's owned link-cycling drives the whole
 page. Painting verifies by grab() probe (family craft)."""
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 from cjm_graph_workbench_tui.spine import fmt_ts
@@ -41,7 +42,7 @@ def _card_markdown(card: Dict[str, Any], expanded: Set[str],
     bits = [f"{v}×{n}" for v, n in sorted(verbs.items())]
     bits.append(f"touches {card.get('touches', 0)}")
     if card.get("last_ts"):
-        bits.append("last " + fmt_ts(card["last_ts"]))
+        bits.append("last " + fmt_ts_s(card["last_ts"]))
     toggle = "− collapse" if nid in expanded else "+ expand"
     lines.append("*" + " · ".join(bits) + f"* — [{toggle}](expand:{nid})")
     if nid in expanded:
@@ -69,7 +70,7 @@ def build_feed_markdown(view: Dict[str, Any], *, zoom: str = "ops",
     lines: List[str] = [f"# feed — {'session ' + key if key else 'live window'}", ""]
     bits = [f"ops {w.get('shown', 0)}/{w.get('total_ops', 0)}"]
     if w.get("cursor"):
-        bits.append("last " + fmt_ts(w["cursor"]))
+        bits.append("last " + fmt_ts_s(w["cursor"]))
     if view.get("missing"):
         bits.append(f"missing {view['missing']}")
     bits.append("zoom: " + ("op ledger" if zoom == "ops" else "node cards"))
@@ -78,7 +79,7 @@ def build_feed_markdown(view: Dict[str, Any], *, zoom: str = "ops",
         lines.append("")
         for op in view.get("ops", []):
             actor = f" `{op['actor']}`" if op.get("actor") else ""
-            row = (f"- **{fmt_ts(op.get('ts'))}** `{op.get('verb', '?')}`{actor}"
+            row = (f"- **{fmt_ts_s(op.get('ts'))}** `{op.get('verb', '?')}`{actor}"
                    f" — {link_text(str(op.get('summary') or ''))}")
             refs = _ref_links(op.get("refs") or [])
             lines.append(row + (f" → {refs}" if refs else ""))
@@ -114,3 +115,13 @@ def build_session_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if not sessions:
         rows.append({"text": "(no sessions registered)", "style": "dim"})
     return rows
+
+
+def fmt_ts_s(ts: Any) -> str:
+    """Unix seconds -> local wall-clock WITH seconds — feed ops land seconds
+    apart, so the ledger needs the precision (user ask 2026-08-14). The spine's
+    fmt_ts (minutes) stays right for slower-moving surfaces."""
+    try:
+        return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return ""
