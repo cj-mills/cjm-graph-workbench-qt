@@ -3,6 +3,7 @@
 import argparse
 import sys
 
+from cjm_substrate_qt_kit.theme import apply_theme
 from PySide6.QtWidgets import QApplication
 
 from .app import WorkbenchWindow
@@ -38,6 +39,7 @@ def main() -> int:
                                                       args.source_journal_path) if p])
     session.start()
     app = QApplication(sys.argv[:1])
+    apply_theme(app)
     window = WorkbenchWindow(session, anchor=args.anchor)
     window.show()
     try:
