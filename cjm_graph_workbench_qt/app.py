@@ -22,7 +22,7 @@ from cjm_substrate_qt_kit.keys import bind
 from cjm_substrate_qt_kit.style import apply_row_style as _kit_apply_row_style
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import (QInputDialog, QListWidget, QListWidgetItem, QMainWindow,
+from PySide6.QtWidgets import (QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
                                QStackedWidget, QTextBrowser)
 
 from .data import read_session_pointer, write_session_pointer
@@ -102,7 +102,8 @@ class WorkbenchWindow(QMainWindow):
                         ("Q", self.close), ("S", self.open_feed),
                         ("Shift+S", self.new_session), ("Z", self.toggle_zoom),
                         ("T", self.title_session), ("F", self.flag_focused),
-                        ("O", self.open_sessions), ("/", self.search_prompt)):
+                        ("O", self.open_sessions), ("/", self.search_prompt),
+                        ("X", self.retract_session_row)):
             bind(self, key, fn)
         bind(self, "J", lambda: self.move_cursor(1), self.rowlist, Qt.WidgetShortcut)
         bind(self, "K", lambda: self.move_cursor(-1), self.rowlist, Qt.WidgetShortcut)
@@ -228,8 +229,8 @@ class WorkbenchWindow(QMainWindow):
             return ("j/k scroll · tab links · enter open · f flag · / new search · "
                     "b back · p portfolio · q quit")
         if self.stage == "sessions":
-            return ("j/k move · enter open feed · b back · p portfolio · "
-                    "r reload · q quit")
+            return ("j/k move · enter open feed · x retract empty · b back · "
+                    "p portfolio · r reload · q quit")
         return HINTS
 
     # ---- seat verbs ----------------------------------------------------
@@ -518,6 +519,22 @@ class WorkbenchWindow(QMainWindow):
     def new_session(self) -> None:
         """`S`: mint + register a session spine node, point .cjm/current-session
         at it, adopt it in-process, open its feed — the start ritual as one key."""
+        # Key-repeat debounce (field find 2026-08-20): a held/bouncing Shift+S
+        # minted TWO spine nodes one second apart. A just-adopted timestamp key
+        # means this press is a repeat, not a new sitting — ignore it.
+        active = (os.environ.get("CJM_SESSION")
+                  or read_session_pointer(self.session.journal_paths))
+        if active:
+            try:
+                age = time.time() - datetime.strptime(
+                    active, "%Y-%m-%d_%H-%M-%S").timestamp()
+                if 0 <= age < 10.0:
+                    self.statusBar().showMessage(
+                        f"{self._where()} · session {active} just minted — "
+                        f"repeat Shift+S ignored")
+                    return
+            except ValueError:
+                pass  # non-timestamp key (manual/legacy) — no debounce basis
         key = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         # Adopt the key BEFORE the journaled write: a registration op stamps
         # with its OWN session (the manual boot ritual's convention — pointer
@@ -560,6 +577,42 @@ class WorkbenchWindow(QMainWindow):
         self.trail.append((self.stage, self.ref, self._seat()))
         self.stage, self.ref = "sessions", None
         self._load()
+
+    def retract_session_row(self) -> None:
+        """`x` (sessions picker): retract an EMPTY double-minted session row.
+
+        The key-repeat cleanup gesture (field find 2026-08-20), not history
+        editing: the active key refuses here, and the data layer refuses any
+        session with journaled ops attributed to it — only true empty mints
+        pass both guards. Confirm dialog before the journaled retraction."""
+        if self.stage != "sessions":
+            return
+        row = self.rowlist.currentRow()
+        if not (0 <= row < len(self.rows)):
+            return
+        key = self.rows[row].get("ref")
+        if not key:
+            return
+        active = (os.environ.get("CJM_SESSION")
+                  or read_session_pointer(self.session.journal_paths))
+        if key == active:
+            self.statusBar().showMessage(
+                f"{self._where()} · ⚠ {key} is the ACTIVE session — not retracting")
+            return
+        if QMessageBox.question(self, "retract session",
+                                f"Retract empty session {key}?") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            res = self.session.retract_session(str(key))
+        except Exception as e:  # keep the seat up — surface, never crash
+            res = {"error": str(e)}
+        if res.get("error"):
+            self.statusBar().showMessage(f"{self._where()} · ⚠ {res['error']}")
+            return
+        self._view_cache.clear()
+        self._load()
+        self.statusBar().showMessage(f"{self._where()} · session {key} retracted · "
+                                     f"{self._hints()}")
 
     def search_prompt(self) -> None:
         """`/`: literal search (the slab-2 half of the 18cd3e8d seat) — locate

@@ -9,7 +9,7 @@ import os
 from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional, Tuple
 
-from cjm_context_graph_primitives.journal import append_write
+from cjm_context_graph_primitives.journal import append_write, read_journal
 from cjm_context_graph_projection import write as write_verbs
 from cjm_context_graph_projection.authoring import read_node
 from cjm_context_graph_projection.factlayer import load_label
@@ -92,6 +92,28 @@ class GraphSession(LoopThreadSession):
         if res.get("written"):
             self._journal("session", {"key": key, "started_at": started_at,
                                       "title": title, "actor": actor})
+        return res
+
+    def retract_session(self, key: str, *, force: bool = False,
+                        actor: str = "user:workbench") -> Dict[str, Any]:
+        """RETRACT an empty-minted Session spine node (key-repeat Shift+S dups).
+
+        Mirrors the CLI guard: any journaled op attributed to the key besides
+        its own registrations means real history — refuse unless force. The
+        landed retraction is journaled so a rebuild converges (the db is a
+        projection; an unjournaled delete resurrects on the next replay)."""
+        foreign = [
+            op for p in self.journal_paths for op in read_journal(p)
+            if (op.get("session") or (op.get("args") or {}).get("session")) == key
+            and not (op.get("verb") == "session"
+                     and (op.get("args") or {}).get("key") == key)]
+        if foreign and not force:
+            return {"error": f"session '{key}' has {len(foreign)} journaled op(s) "
+                             f"attributed to it — not an empty mint",
+                    "written": False}
+        res = self.call(write_verbs.retract_session(self.gx, key, actor=actor))
+        if res.get("written"):
+            self._journal("retract-session", {"key": key, "actor": actor})
         return res
 
     def decide(self, statement: str, *, title: Optional[str] = None,
