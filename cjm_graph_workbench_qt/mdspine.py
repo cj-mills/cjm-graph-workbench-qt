@@ -10,7 +10,7 @@ verifies by grab() probe (family craft)."""
 import re
 from typing import Any, Dict, List, Optional
 
-from cjm_graph_workbench_tui.spine import fmt_ts
+from .spine import fmt_ts
 
 CODE_KINDS = ("CodeSymbol", "CodeModule", "CodeText", "Cell")
 

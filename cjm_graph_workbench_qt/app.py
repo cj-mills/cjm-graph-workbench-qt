@@ -18,7 +18,6 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from cjm_graph_workbench_tui.spine import build_lead_rows, build_portfolio_rows
 from cjm_substrate_qt_kit.keys import bind
 from cjm_substrate_qt_kit.style import apply_row_style as _kit_apply_row_style
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (QInputDialog, QListWidget, QListWidgetItem, QMain
 from .data import read_session_pointer, write_session_pointer
 from .feed import build_feed_markdown, build_session_rows
 from .mdspine import build_node_markdown, build_search_markdown
+from .spine import build_lead_rows, build_portfolio_rows
 
 # Style words paint via the kit's shared palette (STYLE_COLORS /
 # apply_row_style imported above — kit-owned since the transcription

@@ -10,9 +10,8 @@ page. Painting verifies by grab() probe (family craft)."""
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from cjm_graph_workbench_tui.spine import fmt_ts
-
 from .mdspine import _defuse_frontmatter, CODE_KINDS, link_text
+from .spine import fmt_ts
 
 
 def _ref_links(refs: List[Dict[str, Any]]) -> str:
