@@ -18,12 +18,16 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from cjm_substrate_qt_kit.findbar import FindBar
+from cjm_substrate_qt_kit.keyhints import KeyHintsOverlay
+from cjm_substrate_qt_kit.keymap import KeymapRegistry
 from cjm_substrate_qt_kit.keys import bind
+from cjm_substrate_qt_kit.statusstrip import StatusStrip
 from cjm_substrate_qt_kit.style import apply_row_style as _kit_apply_row_style
 from PySide6.QtCore import QEvent, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (QInputDialog, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-                               QStackedWidget, QTextBrowser)
+                               QStackedWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from .data import read_session_pointer, write_session_pointer
 from .feed import build_feed_markdown, build_session_rows
@@ -76,7 +80,17 @@ class WorkbenchWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.addWidget(self.rowlist)
         self.stack.addWidget(self.browser)
-        self.setCentralWidget(self.stack)
+        self.findbar = FindBar(self.browser)  # reading views; focus-follow re-attach
+        central = QWidget()
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self.stack, 1)
+        outer.addWidget(self.findbar)
+        self.strip = StatusStrip()
+        outer.addWidget(self.strip)
+        self.hints_overlay = KeyHintsOverlay(self)
+        self.setCentralWidget(central)
         self.feed_zoom = "ops"                 # "ops" (ledger) | "cards"
         self.feed_expanded: set = set()        # card ids with bodies shown
         self._feed_bodies: Dict[str, Optional[str]] = {}
@@ -95,16 +109,51 @@ class WorkbenchWindow(QMainWindow):
         self.reload()
 
     def _bind_keys(self) -> None:
-        # Kit bind (cjm_substrate_qt_kit.keys) since the transcription
-        # migration's duplication — same helper, owner-first signature.
-        for key, fn in (("B", self.back), ("Escape", self.back),
-                        ("P", self.portfolio), ("R", self.reload),
-                        ("Q", self.close), ("S", self.open_feed),
-                        ("Shift+S", self.new_session), ("Z", self.toggle_zoom),
-                        ("T", self.title_session), ("F", self.flag_focused),
-                        ("O", self.open_sessions), ("/", self.search_prompt),
-                        ("X", self.retract_session_row)):
-            bind(self, key, fn)
+        # Window verbs on the kit KeymapRegistry (adoption rung caa33c98):
+        # the declarative table is the discovery surface (entries() -> menus);
+        # guard_text_entry gates bare-letter verbs off while the FindBar field
+        # has focus. Widget-scoped rows/reading binds stay on kit `bind`.
+        self.keymap = KeymapRegistry(self)
+        add = self.keymap.add
+        add("back", "Back (unwind trail)", "B", self.back, group="Navigate")
+        add("back-esc", "Back (Escape)", "Escape", self.back, group="Navigate")
+        add("portfolio", "Portfolio front door", "P", self.portfolio,
+            group="Navigate")
+        add("reload", "Reload stage (seat survives)", "R", self.reload,
+            group="File")
+        add("quit", "Quit", "Q", self.close, group="File")
+        add("feed", "Open session feed", "S", self.open_feed, group="Session")
+        add("new-session", "Mint new session (start ritual)", "Shift+S",
+            self.new_session, group="Session")
+        add("zoom", "Toggle feed zoom (ops/cards)", "Z", self.toggle_zoom,
+            group="View")
+        add("title-session", "Title seated session (end ritual)", "T",
+            self.title_session, group="Session")
+        add("flag", "Flag focused row", "F", self.flag_focused, group="View")
+        add("open-sessions", "Open sessions list", "O", self.open_sessions,
+            group="Session")
+        add("search", "Graph search (locate + grep)", "/", self.search_prompt,
+            group="Navigate")
+        add("retract-session", "Retract focused session row", "X",
+            self.retract_session_row, group="Session")
+        add("find", "Find in reading view", "Ctrl+F", self.open_find,
+            group="Navigate")
+        add("find-next", "Find next", "F3", self.findbar.next,
+            group="Navigate")
+        add("find-previous", "Find previous", "Shift+F3", self.findbar.previous,
+            group="Navigate")
+        add("keys", "Keyboard hints", "?", self.hints_overlay.toggle,
+            group="View")
+        self.keymap.guard_text_entry()
+        # Overlay model = registry entries() + the widget-scoped rows/reading
+        # binds (declared as data — they live on kit `bind`, not the registry).
+        self.hints_overlay.set_entries(self.keymap.entries() + [
+            {"verb": "rows-move", "label": "move row / scroll", "key": "J/K",
+             "group": "Rows & Reading"},
+            {"verb": "rows-actionable", "label": "jump actionable", "key": "Tab",
+             "group": "Rows & Reading"},
+            {"verb": "rows-open", "label": "open/descend", "key": "Return",
+             "group": "Rows & Reading"}])
         bind(self, "J", lambda: self.move_cursor(1), self.rowlist, Qt.WidgetShortcut)
         bind(self, "K", lambda: self.move_cursor(-1), self.rowlist, Qt.WidgetShortcut)
         bind(self, "Tab", lambda: self.jump_actionable(1), self.rowlist, Qt.WidgetShortcut)
@@ -112,6 +161,30 @@ class WorkbenchWindow(QMainWindow):
         bind(self, "Return", self.descend, self.rowlist, Qt.WidgetShortcut)
         bind(self, "J", lambda: self.scroll_browser(3), self.browser, Qt.WidgetShortcut)
         bind(self, "K", lambda: self.scroll_browser(-3), self.browser, Qt.WidgetShortcut)
+        self._build_menus()
+
+    def _build_menus(self) -> None:
+        """Menus rendered FROM the registry (the discovery surface, scratchpad
+        pattern) — every gesture stays visible without memorization."""
+        menus = {"File": ("reload", "quit"),
+                 "Navigate": ("back", "portfolio", "search", "find",
+                              "find-next", "find-previous"),
+                 "Session": ("feed", "new-session", "title-session",
+                             "open-sessions", "retract-session"),
+                 "View": ("zoom", "flag", "keys")}
+        for title, verbs in menus.items():
+            menu = self.menuBar().addMenu(title)
+            for verb in verbs:
+                menu.addAction(self.keymap.action(verb))
+
+    def open_find(self) -> None:
+        """Ctrl+F: find in the current reading view (kit FindBar). The `/`
+        graph search is the other animal — locate+grep over the whole graph."""
+        if self.stack.currentWidget() is not self.browser:
+            self._paint_result("find works in reading views — `/` searches the graph")
+            return
+        self.findbar.attach(self.browser)
+        self.findbar.open()
 
     # ---- stage loading -------------------------------------------------
 
@@ -126,7 +199,7 @@ class WorkbenchWindow(QMainWindow):
     def _load(self) -> None:
         """Paint the current stage — CACHED when already seen (b/back re-paints
         without a graph read, f4701770; errors never cache); `r` refreshes."""
-        self.statusBar().showMessage(f"{self._where()} · loading…")
+        self._paint_result("loading…")
         if self.stage != "feed":
             self.feed_timer.stop()
         error = None
@@ -193,9 +266,11 @@ class WorkbenchWindow(QMainWindow):
                 self.browser.setFocus()
         except Exception as e:  # never crash the seat — paint and stay up
             error, self.rows = f"load failed: {e}", []
-        self.statusBar().showMessage(
-            f"{self._where()} · ⚠ {error}" if error
-            else f"{self._where()} · {self._hints()}")
+        if error:
+            self._paint_result(f"⚠ {error}", role="warn")
+        else:
+            self._paint_frame()
+            self.strip.clear_readout()   # the loading… note is done
 
     def _paint_rows(self) -> None:
         self.rowlist.clear()
@@ -216,6 +291,18 @@ class WorkbenchWindow(QMainWindow):
                 "feed": f"feed {self.ref or 'live'}",
                 "sessions": "sessions",
                 "search": f"search {str(self.ref)[:24]}"}[self.stage]
+
+    def _paint_frame(self) -> None:
+        """Footer decomposition (DEC 2a42c028): where-chip + stage hints on
+        the strip — OUT of the QStatusBar message channel, so menu-hover
+        QStatusTipEvents can no longer evict them (the root cause)."""
+        self.strip.set_chips([("where", self._where())])
+        self.strip.set_hints(self._hints() + " · ? keys")
+
+    def _paint_result(self, text: str, role: str = "") -> None:
+        """Action results ride the persistent readout (⚠ paints warn)."""
+        self._paint_frame()
+        self.strip.set_readout(text, role=role or None)
 
     def _hints(self) -> str:
         """Stage-contextual keybar (the ba8a423b gap-4 stage half)."""
@@ -408,8 +495,8 @@ class WorkbenchWindow(QMainWindow):
                         self._feed_bodies[nid] = self.session.body(nid)
                     except Exception as e:  # keep the seat up; card shows no body
                         self._feed_bodies[nid] = None
-                        self.statusBar().showMessage(
-                            f"{self._where()} · ⚠ body fetch failed: {e}")
+                        self._paint_result(f"⚠ body fetch failed: {e}",
+                                           role="warn")
             seat = self._seat()
             self._paint_feed()
             self._restore_seat(seat)
@@ -486,7 +573,7 @@ class WorkbenchWindow(QMainWindow):
         try:
             view = fut.result()
         except Exception as e:  # transient read failure must not kill the loop
-            self.statusBar().showMessage(f"{self._where()} · ⚠ feed read failed: {e}")
+            self._paint_result(f"⚠ feed read failed: {e}", role="warn")
             return
         if ((view.get("window") or {}).get("session") or None) != (self.ref or None):
             return  # stale result for a session we already navigated away from
@@ -499,7 +586,7 @@ class WorkbenchWindow(QMainWindow):
         self._feed_view_ref = self.ref or None
         if first:
             self._paint_feed()
-            self.statusBar().showMessage(f"{self._where()} · {self._hints()}")
+            self._paint_frame()
         else:
             seat = self._seat()
             self._paint_feed()
@@ -529,9 +616,8 @@ class WorkbenchWindow(QMainWindow):
                 age = time.time() - datetime.strptime(
                     active, "%Y-%m-%d_%H-%M-%S").timestamp()
                 if 0 <= age < 10.0:
-                    self.statusBar().showMessage(
-                        f"{self._where()} · session {active} just minted — "
-                        f"repeat Shift+S ignored")
+                    self._paint_result(f"session {active} just minted — "
+                                       f"repeat Shift+S ignored")
                     return
             except ValueError:
                 pass  # non-timestamp key (manual/legacy) — no debounce basis
@@ -552,15 +638,14 @@ class WorkbenchWindow(QMainWindow):
                 os.environ.pop("CJM_SESSION", None)
             else:
                 os.environ["CJM_SESSION"] = prev
-            self.statusBar().showMessage(f"{self._where()} · ⚠ session write failed: "
-                                         f"{res['error']}")
+            self._paint_result(f"⚠ session write failed: {res['error']}",
+                               role="warn")
             return
         write_session_pointer(self.session.journal_paths, key)
         self.trail.append((self.stage, self.ref, self._seat()))
         self.stage, self.ref = "feed", key
         self._load()
-        self.statusBar().showMessage(f"{self._where()} · session {key} registered · "
-                                     f"{self._hints()}")
+        self._paint_result(f"session {key} registered")
 
     def toggle_zoom(self) -> None:
         """`z`: op ledger <-> node cards (two zooms of ONE page)."""
@@ -596,8 +681,8 @@ class WorkbenchWindow(QMainWindow):
         active = (os.environ.get("CJM_SESSION")
                   or read_session_pointer(self.session.journal_paths))
         if key == active:
-            self.statusBar().showMessage(
-                f"{self._where()} · ⚠ {key} is the ACTIVE session — not retracting")
+            self._paint_result(f"⚠ {key} is the ACTIVE session — not retracting",
+                               role="warn")
             return
         if QMessageBox.question(self, "retract session",
                                 f"Retract empty session {key}?") != QMessageBox.StandardButton.Yes:
@@ -607,12 +692,11 @@ class WorkbenchWindow(QMainWindow):
         except Exception as e:  # keep the seat up — surface, never crash
             res = {"error": str(e)}
         if res.get("error"):
-            self.statusBar().showMessage(f"{self._where()} · ⚠ {res['error']}")
+            self._paint_result(f"⚠ {res['error']}", role="warn")
             return
         self._view_cache.clear()
         self._load()
-        self.statusBar().showMessage(f"{self._where()} · session {key} retracted · "
-                                     f"{self._hints()}")
+        self._paint_result(f"session {key} retracted")
 
     def search_prompt(self) -> None:
         """`/`: literal search (the slab-2 half of the 18cd3e8d seat) — locate
@@ -636,10 +720,10 @@ class WorkbenchWindow(QMainWindow):
         try:
             res = self.session.register_session(str(self.ref), title=text.strip())
         except Exception as e:
-            self.statusBar().showMessage(f"{self._where()} · ⚠ title write failed: {e}")
+            self._paint_result(f"⚠ title write failed: {e}", role="warn")
             return
         msg = res.get("error") or f"titled: {text.strip()}"
-        self.statusBar().showMessage(f"{self._where()} · {msg}")
+        self._paint_result(msg)
 
     # ---- correction flag (the capture verb) ----------------------------
 
@@ -666,8 +750,7 @@ class WorkbenchWindow(QMainWindow):
         if target is None and self.stage == "node" and self.ref:
             target = str(self.ref)
         if not target:
-            self.statusBar().showMessage(
-                f"{self._where()} · flag: focus a graph link first (tab)")
+            self._paint_result("flag: focus a graph link first (tab)")
             return
         note, ok = QInputDialog.getText(self, "correction flag",
                                         f"note for {target[:8]} (optional):")
@@ -683,13 +766,12 @@ class WorkbenchWindow(QMainWindow):
             res = self.session.decide(statement, state="open", session=session_key,
                                       title=f"flag: {note[:44] if note else target[:8]}")
             if res.get("error"):
-                self.statusBar().showMessage(f"{self._where()} · ⚠ {res['error']}")
+                self._paint_result(f"⚠ {res['error']}", role="warn")
                 return
             stub = res["decision_id"]
             lk = self.session.link(stub, target, "REFERENCES")
         except Exception as e:
-            self.statusBar().showMessage(f"{self._where()} · ⚠ flag write failed: {e}")
+            self._paint_result(f"⚠ flag write failed: {e}", role="warn")
             return
         tail = f" (link: {lk['error']})" if lk.get("error") else ""
-        self.statusBar().showMessage(
-            f"{self._where()} · flagged {target[:8]} → stub {stub[:8]}{tail}")
+        self._paint_result(f"flagged {target[:8]} → stub {stub[:8]}{tail}")
