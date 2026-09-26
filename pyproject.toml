@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cjm-graph-workbench-qt"
-version = "0.0.2"
-description = "Qt workbench over a cjm context graph — the slab-1 PILOT for the PySide6 application lane (DEC 1e5b9a76): the same lens layer and seat verbs as the Textual shell (portfolio front door -> per-anchor pin trees -> node-in-context), re-painted with real typography — proportional type, native word-wrap, markdown-rendered note bodies via QTextDocument. Read-only spike; its field verdict against the Textual shell decides where the slab-2 surface lands. Born on-graph."
+version = "0.0.3"
+description = "Qt workbench over a cjm context graph — the FIRST SHELL INSTANCE of the PySide6 application lane (rulings 2bae2cc1 + d1e3043e, item a9ba662e): the same lens layer and seat verbs as the Textual shell (portfolio front door -> per-anchor pin trees -> node-in-context), the session seat + live feed, the capture verbs — on the kit AppShell (its frame + title bar, menus derived from the keymap, status strip, find bar, key hints, job seat, async reads through the bridge, the one session mint). Born on-graph."
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "Apache-2.0"}
 authors = [{name = "Christian J. Mills", email = "9126128+cj-mills@users.noreply.github.com"}]
 classifiers = ["Programming Language :: Python :: 3", "Programming Language :: Python :: 3 :: Only"]
-dependencies = ['cjm-context-graph-projection>=0.0.39', 'cjm-substrate-qt-kit>=0.0.8', 'PySide6']
+dependencies = ['cjm-context-graph-projection>=0.0.39', 'cjm-substrate-qt-kit>=0.0.9', 'PySide6']
 
 [project.scripts]
 cjm-graph-workbench-qt = "cjm_graph_workbench_qt.cli:main"
