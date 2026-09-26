@@ -28,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Capability manifests dir (default: the projection lib's)")
     p.add_argument("--anchor", default=None,
                    help="Open directly at this anchor's lead (slug or id)")
+    p.add_argument("--theme", default=None, metavar="SYSTEM[:MODE]",
+                   help="Design system and mode for this launch (e.g. netrunner:blue, "
+                        "classical:auto); default: CJM_THEME, then the persisted choice")
     return p
 
 
@@ -39,7 +42,8 @@ def main() -> int:
                                                       args.source_journal_path) if p])
     session.start()
     app = QApplication(sys.argv[:1])
-    apply_theme(app)
+    system, _, mode = (args.theme or "").partition(":")
+    apply_theme(app, system or None, mode or None)
     window = WorkbenchWindow(session, anchor=args.anchor)
     window.show()
     try:
