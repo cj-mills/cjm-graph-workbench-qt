@@ -22,7 +22,7 @@ from cjm_context_graph_projection.projection import grep, locate, show
 from cjm_context_graph_projection.runtime import DEFAULT_MANIFESTS, open_graph
 from cjm_context_graph_projection.workbench import anchor_lead_view, portfolio_view, session_feed
 from cjm_substrate_qt_kit import sessionkey
-from cjm_substrate_qt_kit.loopthread import LoopThreadSession
+from cjm_substrate_qt_kit.loopthread import LoopThreadSession, op_write
 
 
 class GraphSession(LoopThreadSession):
@@ -151,6 +151,7 @@ class GraphSession(LoopThreadSession):
 
     # ---- journaled writes (slab 2) -------------------------------------
 
+    @op_write
     def register_session(self, key: str, *, started_at: Optional[float] = None,
                          title: Optional[str] = None,
                          actor: str = "user:workbench") -> Dict[str, Any]:
@@ -161,6 +162,7 @@ class GraphSession(LoopThreadSession):
                                      "title": title, "actor": actor})
         return res
 
+    @op_write
     def retract_session(self, key: str, *, force: bool = False,
                         actor: str = "user:workbench") -> Dict[str, Any]:
         """RETRACT an empty-minted Session spine node (key-repeat Shift+S dups).
@@ -183,6 +185,7 @@ class GraphSession(LoopThreadSession):
             self.journal("retract-session", {"key": key, "actor": actor})
         return res
 
+    @op_write
     def decide(self, statement: str, *, title: Optional[str] = None,
                state: Optional[str] = None, session: Optional[str] = None,
                actor: str = "user:workbench") -> Dict[str, Any]:
@@ -205,6 +208,7 @@ class GraphSession(LoopThreadSession):
                                         "supersede": False})
         return res
 
+    @op_write
     def link(self, source_id: str, target_id: str, relation: str, *,
              actor: str = "user:workbench") -> Dict[str, Any]:
         res = self.call(write_verbs.link(self.gx, source_id, target_id, relation,
