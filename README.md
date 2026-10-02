@@ -7,9 +7,9 @@ _No purpose recorded on-graph yet — author it with_ `assert 64eca3b7-45b2-550b
 ## Modules
 
 - **`cjm_graph_workbench_qt.__init__`** — Qt workbench over a cjm context graph — the PySide6 lane slab-1 pilot (d2a6d8e1).
-- **`cjm_graph_workbench_qt.app`** — The Qt workbench shell: the same seat verbs, real typography (item d2a6d8e1).
+- **`cjm_graph_workbench_qt.app`** — The Qt workbench: the FIRST SHELL INSTANCE (ruling 2bae2cc1, item a9ba662e).
 - **`cjm_graph_workbench_qt.cli`** — CLI entry for the Qt graph workbench (console script `cjm-graph-workbench-qt`).
-- **`cjm_graph_workbench_qt.data`** — One open graph behind a private asyncio loop thread — sync reads for the Qt shell.
+- **`cjm_graph_workbench_qt.data`** — One open graph behind a private asyncio loop thread — the workbench's
 - **`cjm_graph_workbench_qt.feed`** — The session feed as MARKDOWN — slab 2's seat page (DEC ee9e9be6).
 - **`cjm_graph_workbench_qt.mdspine`** — Node-in-context as MARKDOWN — the Qt absorption surface (item d2a6d8e1).
 - **`cjm_graph_workbench_qt.spine`** — Pure spine for the workbench: lens-layer view dicts -> flat row lists.
@@ -19,19 +19,20 @@ _No purpose recorded on-graph yet — author it with_ `assert 64eca3b7-45b2-550b
 ### `cjm_graph_workbench_qt.app`
 
 - `WorkbenchWindow` _class_ — Portfolio front door -> anchor pin tree -> node-in-context detail.
-- `apply_row_style` _function_ — Map a spine row's style string onto a list item — delegates to the kit
+- `picker_rows` _function_ — Spine row dicts -> PickerList rows: every row is a cursor stop (j/k
 
 ### `cjm_graph_workbench_qt.cli`
 
-- `build_parser` _function_ — The same argument surface as the Textual shell — db + journal paths stay
-- `main` _function_ — Open the graph session, run the window; teardown is unconditional.
+- `build_parser` _function_
+- `main` _function_ — Resolve the launch, open the graph session, run the window; teardown is unconditional.
+- `resolve` _function_ — The precedence walk over the launch keys; the graph db is required
 
 ### `cjm_graph_workbench_qt.data`
 
-- `GraphSession` _class_ — Sync facade over the async lens layer: start() opens the graph, the
-- `read_session_pointer` _function_ — The pointed session key, or None (missing/empty file is not an error).
-- `session_pointer_path` _function_ — The `.cjm/current-session` pointer next to the WRITES journal — the
-- `write_session_pointer` _function_ — Point `.cjm/current-session` at `key` (the seat's S verb); returns the
+- `GraphSession` _class_ — The workbench's session: start() opens the graph on the loop, the
+- `read_session_pointer` _function_
+- `session_pointer_path` _function_
+- `write_session_pointer` _function_
 
 ### `cjm_graph_workbench_qt.feed`
 
