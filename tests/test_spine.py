@@ -1,8 +1,8 @@
 """The workbench spine, pure half: view dicts -> row lists (paint-path strings
 verify by pilot probe, per the standing TUI craft)."""
 
-from cjm_graph_workbench_qt.spine import (build_lead_rows, build_node_rows,
-                                           build_portfolio_rows, fmt_ts)
+from cjm_graph_workbench_qt.spine import (build_lead_rows, build_node_rows, build_portfolio_rows,
+                                          fmt_ts)
 
 
 def test_portfolio_rows_order_and_descend_refs():
