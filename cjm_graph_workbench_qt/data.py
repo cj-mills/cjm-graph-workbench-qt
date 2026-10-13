@@ -15,9 +15,10 @@ from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_primitives.journal import read_journal
+from cjm_context_graph_primitives.query import OrderBy
 from cjm_context_graph_projection import write as write_verbs
 from cjm_context_graph_projection.authoring import read_node
-from cjm_context_graph_projection.factlayer import load_label
+from cjm_context_graph_projection.factlayer import load_label_where
 from cjm_context_graph_projection.projection import grep, locate, show
 from cjm_context_graph_projection.runtime import DEFAULT_MANIFESTS, open_graph
 from cjm_context_graph_projection.workbench import anchor_lead_view, portfolio_view, session_feed
@@ -76,7 +77,10 @@ class GraphSession(LoopThreadSession):
                             since=since, limit=limit)
 
     async def _sessions(self, limit: int) -> List[Dict[str, Any]]:
-        nodes = await load_label(self.gx, "Session", limit=limit)
+        # The newest `limit` sessions, ordered in SQL before the cut (finding a107e2f3: a
+        # capped load sorted afterwards dropped the NEWEST once the class outgrew the cap).
+        nodes = await load_label_where(self.gx, "Session", [], limit=limit,
+                                       order_by=OrderBy("started_at", descending=True))
         out: List[Dict[str, Any]] = []
         for n in nodes:
             props = (n.get("properties") if isinstance(n, dict)
