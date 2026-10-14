@@ -16,13 +16,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cjm_context_graph_primitives.journal import read_journal
 from cjm_context_graph_primitives.query import OrderBy
-from cjm_context_graph_projection import write as write_verbs
+from cjm_context_graph_projection import perf, write as write_verbs
 from cjm_context_graph_projection.authoring import read_node
 from cjm_context_graph_projection.factlayer import load_label_where
 from cjm_context_graph_projection.projection import grep, locate, show
 from cjm_context_graph_projection.runtime import DEFAULT_MANIFESTS, open_graph
 from cjm_context_graph_projection.workbench import anchor_lead_view, portfolio_view, session_feed
 from cjm_substrate_qt_kit import sessionkey
+from cjm_substrate_qt_kit.gesturebench import ladder
 from cjm_substrate_qt_kit.loopthread import LoopThreadSession, op_write
 
 
@@ -31,9 +32,12 @@ class GraphSession(LoopThreadSession):
     `*_async` reads return Futures for the shell's bridge, the plain reads
     block (probes, scripts), close() tears both down. One instance per
     window; concurrent instances stay legal (no current-session singletons —
-    DEC ee9e9be6)."""
+    DEC ee9e9be6). Every read and write is a measured gesture (the kit's seam,
+    design detail 4389a579) in the graph's timings ledger; the feed is a poll."""
 
     thread_name = "graph-session"
+    app = "workbench"
+    polls = frozenset({"feed"})
 
     def __init__(self, graph_db_path: str, manifests_dir: Optional[str] = None,
                  journal_paths: Optional[List[str]] = None, timeout: float = 60.0):
@@ -47,6 +51,14 @@ class GraphSession(LoopThreadSession):
         self._stack = AsyncExitStack()
         self.gx = await self._stack.enter_async_context(
             open_graph(self.graph_db_path, self.manifests_dir))
+        await self.measure_into(self.graph_db_path)
+
+    async def measure_covariates(self) -> Optional[Dict[str, Any]]:
+        """The growth covariates beside the gestures (design detail 4389a579): the
+        projection's measure -- the store, the repos, the journal families this
+        session reads (journal_paths: the writes journal, then the source journal)."""
+        return await perf.measure_covariates(self.gx, dict(zip(("writes", "source"),
+                                                               self.journal_paths)))
 
     async def on_close(self) -> None:
         if self._stack is not None:
@@ -100,58 +112,58 @@ class GraphSession(LoopThreadSession):
                 await grep(self.gx, term, limit=limit))
 
     def portfolio(self) -> Dict[str, Any]:
-        return self.call(self._portfolio())
+        return self.call(self._portfolio(), gesture="portfolio")
 
     def portfolio_async(self) -> Future:
-        return self.submit(self._portfolio())
+        return self.submit(self._portfolio(), gesture="portfolio")
 
     def lead(self, ref: str) -> Dict[str, Any]:
-        return self.call(self._lead(ref))
+        return self.call(self._lead(ref), gesture="lead")
 
     def lead_async(self, ref: str) -> Future:
-        return self.submit(self._lead(ref))
+        return self.submit(self._lead(ref), gesture="lead")
 
     def node(self, ref: str) -> Tuple[Dict[str, Any], Optional[str]]:
-        return self.call(self._node(ref))
+        return self.call(self._node(ref), gesture="node")
 
     def node_async(self, ref: str) -> Future:
-        return self.submit(self._node(ref))
+        return self.submit(self._node(ref), gesture="node")
 
     def body(self, ref: str) -> Optional[str]:
         """A node's verbatim body alone (feed-card expansion — no `show` join)."""
-        return self.call(self._body(ref))
+        return self.call(self._body(ref), gesture="body")
 
     def body_async(self, ref: str) -> Future:
-        return self.submit(self._body(ref))
+        return self.submit(self._body(ref), gesture="body")
 
     def feed(self, session_key: Optional[str] = None, since: Optional[float] = None,
              limit: int = 200) -> Dict[str, Any]:
         """The two-zoom session feed (DEC ee9e9be6) — declarative and cheap, so
         live mode is plain re-evaluation (the Qt shell polls this)."""
-        return self.call(self._feed(session_key, since, limit))
+        return self.call(self._feed(session_key, since, limit), gesture="feed")
 
     def feed_async(self, session_key: Optional[str] = None,
                    since: Optional[float] = None, limit: int = 200) -> Future:
         """Non-blocking feed read: the Qt shell must never block its paint
         thread on a journal parse (drive find 2026-08-14: the sync 2s poll
         hitched scrolling)."""
-        return self.submit(self._feed(session_key, since, limit))
+        return self.submit(self._feed(session_key, since, limit), gesture="feed")
 
     def sessions(self, limit: int = 500) -> List[Dict[str, Any]]:
         """Registered Session spine nodes (one server-side label pull), newest
         first: {id, key, title, started_at}."""
-        return self.call(self._sessions(limit))
+        return self.call(self._sessions(limit), gesture="sessions")
 
     def sessions_async(self, limit: int = 500) -> Future:
-        return self.submit(self._sessions(limit))
+        return self.submit(self._sessions(limit), gesture="sessions")
 
     def search(self, term: str, limit: int = 25) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """The literal pair (slab-2 half of the search seat): locate over
         identifying properties + grep over exhaustive content."""
-        return self.call(self._search(term, limit))
+        return self.call(self._search(term, limit), gesture="search")
 
     def search_async(self, term: str, limit: int = 25) -> Future:
-        return self.submit(self._search(term, limit))
+        return self.submit(self._search(term, limit), gesture="search")
 
     # ---- journaled writes (slab 2) -------------------------------------
 
@@ -224,6 +236,28 @@ class GraphSession(LoopThreadSession):
                                   "source_label": res.get("source_label"),
                                   "target_label": res.get("target_label")})
         return res
+
+
+def bench_gestures(
+    params: Dict[str, Any],  # db, manifests_dir, journals; the lane's anchor / hub / session / term
+) -> List[str]:  # The gestures run, in order
+    """The workbench's canonical gestures for the scale harness (design detail 4389a579): its
+    read ladder on one graph -- the portfolio, an anchor's lead, a node, one feed tick, the
+    sessions list, a search -- each measured by the session's own seam."""
+    journals = params.get("journals") or {}
+    s = GraphSession(params["db"], manifests_dir=params.get("manifests_dir"),
+                     journal_paths=[p for p in (journals.get("writes"), journals.get("source")) if p],
+                     timeout=float(params.get("timeout_s", 3600)))
+    s.start()
+    try:
+        return ladder([("portfolio", s.portfolio),
+                       ("lead", lambda: s.lead(params["anchor"])),
+                       ("node", lambda: s.node(params["hub"])),
+                       ("feed", lambda: s.feed(params.get("session"))),
+                       ("sessions", s.sessions),
+                       ("search", lambda: s.search(params["term"]))])
+    finally:
+        s.close()
 
 
 # The session-pointer helpers moved to the kit (sessionkey — the ONE

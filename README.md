@@ -30,6 +30,7 @@ _No purpose recorded on-graph yet — author it with_ `assert 64eca3b7-45b2-550b
 ### `cjm_graph_workbench_qt.data`
 
 - `GraphSession` _class_ — The workbench's session: start() opens the graph on the loop, the
+- `bench_gestures` _function_ — The workbench's canonical gestures for the scale harness (design detail 4389a579): its
 - `read_session_pointer` _function_
 - `session_pointer_path` _function_
 - `write_session_pointer` _function_
