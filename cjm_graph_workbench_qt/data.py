@@ -7,14 +7,13 @@ OPEN / JOURNAL / CLOSE pattern, ruling 2bae2cc1), opens the graph ONCE on it
 (the cold capability load is a per-open cost, never a per-read one), and
 exposes every read twice: the `*_async` form — a Future the shell's bridge
 lands on the Qt thread (the paint thread never blocks) — and the blocking
-form for probes, scripts and teardown. Writes are journal-mirrored in
-cg-write's exact arg shape through the base's journal()."""
+form for probes, scripts and teardown. Writes go through the CLI's own landing
+functions inside its unit of work (ruling d2d05e78): journaled before they apply."""
 
 from concurrent.futures import Future
 from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional, Tuple
 
-from cjm_context_graph_primitives.journal import read_journal
 from cjm_context_graph_primitives.query import OrderBy
 from cjm_context_graph_projection import perf, write as write_verbs
 from cjm_context_graph_projection.authoring import read_node
@@ -22,6 +21,7 @@ from cjm_context_graph_projection.factlayer import load_label_where
 from cjm_context_graph_projection.projection import grep, locate, show
 from cjm_context_graph_projection.runtime import DEFAULT_MANIFESTS, open_graph
 from cjm_context_graph_projection.workbench import anchor_lead_view, portfolio_view, session_feed
+from cjm_context_graph_projection.writes import write_window
 from cjm_substrate_qt_kit import sessionkey
 from cjm_substrate_qt_kit.gesturebench import ladder
 from cjm_substrate_qt_kit.loopthread import LoopThreadSession, op_write
@@ -166,76 +166,64 @@ class GraphSession(LoopThreadSession):
         return self.submit(self._search(term, limit), gesture="search")
 
     # ---- journaled writes (slab 2) -------------------------------------
+    # Each write gesture is ONE coroutine inside the unit of work (ruling d2d05e78): the writes
+    # journal's lock and heal, the verb's landing function -- the same one the CLI's branch
+    # calls -- planning each op, appending it, applying it through the replay's applier, and the
+    # live write window's site-link step before the lock is released.
 
-    @op_write
+    def _writes(self):
+        return write_window(self.gx, self.journal_paths[0] if self.journal_paths else None)
+
     def register_session(self, key: str, *, started_at: Optional[float] = None,
                          title: Optional[str] = None,
                          actor: str = "user:workbench") -> Dict[str, Any]:
-        res = self.call(write_verbs.register_session(
-            self.gx, key, started_at=started_at, title=title, actor=actor))
-        if res.get("written"):
-            self.journal("session", {"key": key, "started_at": started_at,
-                                     "title": title, "actor": actor})
-        return res
+        return self.call(self._register_session(key, started_at, title, actor),
+                         gesture="register_session")
 
     @op_write
+    async def _register_session(self, key: str, started_at: Optional[float],
+                                title: Optional[str], actor: str) -> Dict[str, Any]:
+        async with self._writes() as writes:
+            return await write_verbs.land_session(self.gx, writes, key, started_at=started_at,
+                                                  title=title, actor=actor)
+
     def retract_session(self, key: str, *, force: bool = False,
                         actor: str = "user:workbench") -> Dict[str, Any]:
-        """RETRACT an empty-minted Session spine node (key-repeat Shift+S dups).
-
-        Mirrors the CLI guard: any journaled op attributed to the key besides
-        its own registrations means real history — refuse unless force. The
-        landed retraction is journaled so a rebuild converges (the db is a
-        projection; an unjournaled delete resurrects on the next replay)."""
-        foreign = [
-            op for p in self.journal_paths for op in read_journal(p)
-            if (op.get("session") or (op.get("args") or {}).get("session")) == key
-            and not (op.get("verb") == "session"
-                     and (op.get("args") or {}).get("key") == key)]
-        if foreign and not force:
-            return {"error": f"session '{key}' has {len(foreign)} journaled op(s) "
-                             f"attributed to it — not an empty mint",
-                    "written": False}
-        res = self.call(write_verbs.retract_session(self.gx, key, actor=actor))
-        if res.get("written"):
-            self.journal("retract-session", {"key": key, "actor": actor})
-        return res
+        """RETRACT an empty-minted Session spine node (key-repeat Shift+S dups): the landing
+        function's emptiness guard refuses a key with journaled history unless force."""
+        return self.call(self._retract_session(key, force, actor), gesture="retract_session")
 
     @op_write
+    async def _retract_session(self, key: str, force: bool, actor: str) -> Dict[str, Any]:
+        async with self._writes() as writes:
+            return await write_verbs.land_retract_session(
+                self.gx, writes, key, journal_paths=self.journal_paths, force=force, actor=actor)
+
     def decide(self, statement: str, *, title: Optional[str] = None,
                state: Optional[str] = None, session: Optional[str] = None,
                actor: str = "user:workbench") -> Dict[str, Any]:
-        """Mint a Decision (optionally with task_state, mirroring `decide --state`:
-        a fresh work item is invisible to readiness until task_state lands)."""
-        res = self.call(write_verbs.decide(self.gx, statement, actor=actor,
-                                           session=session, title=title))
-        if res.get("error"):
-            return res
-        self.journal("decide", {"statement": statement, "actor": actor,
-                                "supports": None, "supersedes": None,
-                                "session": session, "title": title})
-        if state:
-            st = self.call(write_verbs.assert_value(
-                self.gx, res["decision_id"], "task_state", state, actor=actor))
-            if not st.get("error"):
-                self.journal("assert", {"subject": res["decision_id"],
-                                        "predicate": "task_state", "value": state,
-                                        "actor": actor, "evidence": None,
-                                        "supersede": False})
-        return res
+        """Mint a Decision (optionally with task_state, `decide --state`'s chain: a fresh work
+        item is invisible to readiness until task_state lands)."""
+        return self.call(self._decide(statement, title, state, session, actor), gesture="decide")
 
     @op_write
+    async def _decide(self, statement: str, title: Optional[str], state: Optional[str],
+                      session: Optional[str], actor: str) -> Dict[str, Any]:
+        async with self._writes() as writes:
+            return await write_verbs.land_decide(
+                self.gx, writes, statement, actor=actor, session=session, title=title,
+                facts=[("task_state", state)] if state else [])
+
     def link(self, source_id: str, target_id: str, relation: str, *,
              actor: str = "user:workbench") -> Dict[str, Any]:
-        res = self.call(write_verbs.link(self.gx, source_id, target_id, relation,
-                                         actor=actor))
-        if res.get("written"):
-            self.journal("link", {"source_id": res["source_id"],
-                                  "target_id": res["target_id"],
-                                  "relation": relation, "actor": actor,
-                                  "source_label": res.get("source_label"),
-                                  "target_label": res.get("target_label")})
-        return res
+        return self.call(self._link(source_id, target_id, relation, actor), gesture="link")
+
+    @op_write
+    async def _link(self, source_id: str, target_id: str, relation: str,
+                    actor: str) -> Dict[str, Any]:
+        async with self._writes() as writes:
+            return await write_verbs.land_link(self.gx, writes, source_id, target_id, relation,
+                                               actor=actor, manifests_dir=self.manifests_dir)
 
 
 def bench_gestures(
