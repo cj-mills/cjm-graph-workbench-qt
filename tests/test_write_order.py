@@ -21,8 +21,8 @@ from pathlib import Path
 
 import psutil
 import pytest
-from cjm_context_graph_primitives.journal import read_journal
-from cjm_context_graph_primitives.writer import FAULT_EXIT, JOURNAL_FAULT_ENV, lock_path
+from cjm_context_graph_primitives.journal import lock_path, read_journal
+from cjm_context_graph_primitives.writer import FAULT_EXIT, JOURNAL_FAULT_ENV
 from cjm_context_graph_projection.runtime import DEFAULT_GRAPH_ID, DEFAULT_MANIFESTS
 from cjm_dev_graph_schema.nodes import DecisionNode
 from cjm_graph_workbench_qt.data import GraphSession
